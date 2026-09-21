@@ -60,16 +60,17 @@ respondents; it does not list option combinations.
 
 The **Analyze** tab lets you choose a question and one or more **Group by**
 keys, inspect its response counts, summary, and graph, then run an applicable
-test across the resulting groups in all loaded sheets. For example, choose
+test. For example, choose
 `Age range`, `Gender`, or both. Choosing both compares age-by-gender
 combinations (such as `Age range=18-24 | Gender=Female`). Group-key values
-represent independent populations, not respondent IDs. Tests that support
-multiple groups can compare more than two combinations.
+represent independent populations, not respondent IDs.
 
-The selected question's type appears below the question picker. Use **Show
-responses from** to view one group in the response counts,
-summary, graph, and free-response list. Statistical tests always compare all
-loaded groups. Select **All groups** to return to the combined view. The
+The selected question's type appears below the question picker. **Compare
+responses** can tally all valid responses together, show one group, or compare
+groups. Group comparison shows each group separately and offers statistical
+tests. For tests designed for two groups, the app tests every pair when there
+are more than two groups and adjusts p-values across pairs. The selected test's
+description appears beside it. The
 **Graph** picker offers charts suited to the question type:
 Linkert response bars, stacked bars, and boxplots; ordered categorical
 response bars, stacked bars, and dot plots; continuous boxplots, histograms,
@@ -88,15 +89,13 @@ Free responses are displayed without an inferential test.
 
 ## Compile a report
 
-Use the **Report** tab to check the questions to include, or use **Select all**
-and **Clear selection**. Every selected question automatically includes a basic
-summary. Open a question's settings to choose its **Group by** keys, filter its
-descriptive sections to one group, and optionally include response status counts,
-a graph, a statistical test, free responses, or notes. The preview updates as you
-change the selection. Download the result as a self-contained HTML file.
-Statistical tests in the report use all loaded groups, even when its
-descriptive sections show one group. Reports are generated from the currently
-loaded data; clearing data also clears the report selection.
+The **Report** tab starts with every question selected and includes a basic
+summary for each. Use the checkboxes or **Select all** and **Clear selection**.
+Choose an optional comparison test directly under a question. Open **More
+options** to change grouping or summary view, and add response status counts,
+a graph, free responses, or notes. The preview updates as you change settings;
+download a self-contained HTML file. Tests use all loaded groups even when the
+summary shows one group. Clearing data clears the report.
 
 The optional tests require `brunnermunzel`, `WRS2`, or `PMCMRplus`. Install
 the ones you need with:

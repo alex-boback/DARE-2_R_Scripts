@@ -233,6 +233,59 @@ summarize_question <- function(frame) {
   counts
 }
 
+test_description <- function(method) {
+  if (is.null(method) || !length(method)) return("")
+  switch(method,
+    "Mann-Whitney U" = "Compares the rank distributions of two independent groups.",
+    "Brunner-Munzel" = "Tests whether observations from one group tend to exceed those from another, without assuming equal spread.",
+    "Yuen trimmed-mean test" = "Compares two groups using means after trimming extreme values.",
+    "Welch t-test" = "Compares two group means while allowing unequal variances.",
+    "Independent t-test" = "Compares two group means assuming equal variances.",
+    "Kruskal-Wallis" = "Tests whether response ranks differ among groups; it does not identify which groups differ.",
+    "One-way ANOVA" = "Tests whether any group mean differs, assuming equal variances.",
+    "Welch ANOVA" = "Tests whether any group mean differs while allowing unequal variances.",
+    "Fligner-Killeen" = "Tests whether group spreads differ.",
+    "Robust trimmed-mean ANOVA" = "Tests whether trimmed group means differ.",
+    "Tukey HSD post-hoc" = "Compares every pair of group means with adjustment for multiple comparisons.",
+    "Games-Howell post-hoc" = "Compares every pair of group means while allowing unequal variances.",
+    "Dunn post-hoc" = "Compares every pair of group ranks with adjusted p-values.",
+    "Fisher exact" = "Tests whether response proportions differ across groups using an exact contingency-table test.",
+    "Chi-square" = "Tests whether response proportions differ across groups using a contingency table.",
+    "")
+}
+
+pairwise_question_test <- function(frame, method, choice = NULL) {
+  groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
+  if (length(groups) < 2) stop("At least two groups need valid responses.")
+  if (!method %in% available_tests(frame$type[1], 2))
+    stop("Choose a test that supports two groups for pairwise comparisons.")
+  pairs <- combn(groups, 2, simplify = FALSE)
+  results <- lapply(pairs, function(pair) tryCatch({
+    subset <- frame[!is.na(frame$group) & frame$group %in% pair, , drop = FALSE]
+    run_question_test(subset, method, choice)
+  }, error = function(e) list(error = conditionMessage(e))))
+  p <- vapply(results, function(x)
+    if (is.null(x$p_value)) NA_real_ else x$p_value, 0.0)
+  adjusted <- rep(NA_real_, length(p))
+  adjusted[!is.na(p)] <- p.adjust(p[!is.na(p)], method = "BH")
+  table <- data.frame(group_1 = vapply(pairs, `[[`, "", 1),
+                      group_2 = vapply(pairs, `[[`, "", 2),
+                      p_value = signif(p, 4), adjusted_p = signif(adjusted, 4),
+                      note = vapply(results, function(x)
+                        if (is.null(x$error)) "" else x$error, ""))
+  list(method = paste(method, "pairwise"), pairwise = table,
+       note = "Adjusted p-values use the Benjamini-Hochberg method across all pairs.")
+}
+
+comparison_question_test <- function(frame, method, choice = NULL) {
+  groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
+  if (length(groups) < 2) stop("At least two groups need valid responses.")
+  if (length(groups) > 2 && method %in% available_tests(frame$type[1], 2))
+    pairwise_question_test(frame, method, choice)
+  else
+    run_question_test(frame, method, choice)
+}
+
 present_question_summary <- function(frame) {
   summary <- summarize_question(frame)
   if (frame$type[1] == "multiselect" && !is.null(summary) &&

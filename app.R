@@ -29,11 +29,15 @@ ui <- fluidPage(
           selectInput("question", "Question", choices = NULL),
           textOutput("question_type"),
           selectInput("group_keys", "Group by", choices = NULL, multiple = TRUE),
-          selectInput("view_group", "Show responses from",
-                      choices = c("All groups" = "__all_groups__")),
+          selectInput("comparison_mode", "Compare responses",
+                      choices = c("Tally all responses together" = "tally",
+                                  "One group" = "single",
+                                  "Compare groups" = "compare")),
+          conditionalPanel("input.comparison_mode == 'single'",
+            selectInput("view_group", "Group", choices = NULL)),
           selectInput("graph", "Graph", choices = NULL),
-          helpText("The group filter changes the overview. Tests compare all loaded groups."),
           selectInput("test", "Statistical test", choices = NULL),
+          textOutput("test_description"),
           uiOutput("choice_ui"),
           actionButton("run_test", "Run test", class = "btn-primary")
         ),
@@ -59,12 +63,10 @@ ui <- fluidPage(
       fluidRow(
         column(4,
           textInput("report_title", "Report title", value = "Survey analysis report"),
-          checkboxGroupInput("report_questions", "Questions to include", choices = NULL),
           actionButton("report_select_all", "Select all"),
           actionButton("report_clear_selection", "Clear selection"),
-          helpText("Each selected question includes a basic summary. Open its settings for optional content."),
-          h4("Question settings"),
-          uiOutput("report_settings"),
+          helpText("All questions start selected with a basic summary. Choose a test directly beneath a question; open More options for graphs and filters."),
+          uiOutput("report_questions_ui"),
           br(), br(),
           downloadButton("download_report", "Download HTML report")
         ),
@@ -110,8 +112,6 @@ server <- function(input, output, session) {
         names(x$types)[x$types != "group key"])))
       updateSelectInput(session, "question", choices = questions,
                         selected = if (length(questions)) questions[1] else character())
-      updateCheckboxGroupInput(session, "report_questions", choices = questions,
-                               selected = intersect(input$report_questions, questions))
       updateTabsetPanel(session, "workflow", selected = "Analyze")
     }
   })
@@ -122,11 +122,9 @@ server <- function(input, output, session) {
     updateSelectInput(session, "group_keys", choices = character())
     updateSelectInput(session, "test", choices = character())
     updateSelectInput(session, "view_group",
-                      choices = c("All groups" = "__all_groups__"),
-                      selected = "__all_groups__")
+                      choices = character())
+    updateSelectInput(session, "comparison_mode", selected = "tally")
     updateSelectInput(session, "graph", choices = character())
-    updateCheckboxGroupInput(session, "report_questions", choices = character(),
-                             selected = character())
     updateTabsetPanel(session, "workflow", selected = "Load data")
   })
 
@@ -185,14 +183,20 @@ server <- function(input, output, session) {
     paste("Question type:", current_frame()$type[1])
   })
 
-  observeEvent(current_frame(), {
+  observeEvent(list(current_frame(), input$comparison_mode), {
     frame <- current_frame()
     groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
-    tests <- available_tests(frame$type[1], length(groups))
+    mode <- input$comparison_mode
+    tests <- if (identical(mode, "compare") && length(groups) >= 2)
+      unique(c(available_tests(frame$type[1], length(groups)),
+               available_tests(frame$type[1], 2))) else character()
+    modes <- c("Tally all responses together" = "tally", "One group" = "single")
+    if (length(groups) >= 2) modes <- c(modes, "Compare groups" = "compare")
+    updateSelectInput(session, "comparison_mode", choices = modes,
+      selected = if (mode %in% unname(modes)) mode else "tally")
     updateSelectInput(session, "view_group",
-                      choices = c("All groups" = "__all_groups__",
-                                  stats::setNames(groups, groups)),
-                      selected = "__all_groups__")
+                      choices = stats::setNames(groups, groups),
+                      selected = if (length(groups)) groups[1] else character())
     graphs <- graph_options(frame$type[1])
     updateSelectInput(session, "graph", choices = graphs,
                       selected = if (length(graphs)) graphs[1] else character())
@@ -202,11 +206,12 @@ server <- function(input, output, session) {
 
   view_frame <- reactive({
     frame <- current_frame()
-    if (!is.null(input$view_group) &&
-        !identical(input$view_group, "__all_groups__") &&
-        input$view_group %in% frame$group)
+    if (identical(input$comparison_mode, "single") &&
+        length(input$view_group) && input$view_group %in% frame$group)
       frame <- frame[!is.na(frame$group) & frame$group == input$view_group,
                      , drop = FALSE]
+    if (identical(input$comparison_mode, "tally"))
+      frame$group[!is.na(frame$group)] <- "All responses"
     frame
   })
 
@@ -251,15 +256,19 @@ server <- function(input, output, session) {
   result_state <- reactiveVal(NULL)
   observeEvent(current_frame(), result_state(NULL), ignoreInit = TRUE)
   observeEvent(input$test, result_state(NULL), ignoreInit = TRUE)
+  observeEvent(input$comparison_mode, result_state(NULL), ignoreInit = TRUE)
   observeEvent(input$choice, result_state(NULL), ignoreInit = TRUE)
   observeEvent(input$run_test, {
     result_state(tryCatch({
       frame <- current_frame()
       req(input$test)
       groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
-      if (!input$test %in% available_tests(frame$type[1], length(groups)))
+      tests <- unique(c(available_tests(frame$type[1], length(groups)),
+                        available_tests(frame$type[1], 2)))
+      if (!identical(input$comparison_mode, "compare") ||
+          !input$test %in% tests)
         stop("This test is not available for the current question.")
-      run_question_test(frame, input$test, input$choice)
+      comparison_question_test(frame, input$test, input$choice)
     }, error = function(e) list(error = conditionMessage(e))))
   })
 
@@ -270,8 +279,20 @@ server <- function(input, output, session) {
       return()
     }
     x <- result_state()
-    if (is.null(x)) cat("Choose a test and click Run test.")
+    if (!identical(input$comparison_mode, "compare"))
+      cat("Choose Compare groups to run a statistical test.")
+    else if (is.null(x)) cat("Choose a test and click Run test.")
     else cat(report_test_text(x))
+  })
+
+  output$test_description <- renderText({
+    if (!identical(input$comparison_mode, "compare")) return(NULL)
+    frame <- current_frame()
+    groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
+    pairwise <- length(groups) > 2 && length(input$test) > 0 &&
+      input$test %in% available_tests(frame$type[1], 2)
+    paste(test_description(input$test), if (pairwise)
+      "Run for every pair; p-values are adjusted across pairs." else "")
   })
 
   output$free_heading <- renderUI({
@@ -292,14 +313,15 @@ server <- function(input, output, session) {
   })
 
   observeEvent(input$report_select_all, {
-    updateCheckboxGroupInput(session, "report_questions",
-      selected = report_questions_available())
+    for (i in seq_along(report_questions_available()))
+      updateCheckboxInput(session, paste0("report_include_", i), value = TRUE)
   })
   observeEvent(input$report_clear_selection, {
-    updateCheckboxGroupInput(session, "report_questions", selected = character())
+    for (i in seq_along(report_questions_available()))
+      updateCheckboxInput(session, paste0("report_include_", i), value = FALSE)
   })
 
-  output$report_settings <- renderUI({
+  output$report_questions_ui <- renderUI({
     surveys <- loaded()
     questions <- report_questions_available()
     tagList(lapply(seq_along(questions), function(i) {
@@ -309,33 +331,49 @@ server <- function(input, output, session) {
       frame <- analysis_frame(surveys, question, keys)
       type <- frame$type[1]
       groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
-      tests <- available_tests(type, length(groups))
+      tests <- if (length(groups) >= 2)
+        unique(c(available_tests(type, length(groups)),
+                 available_tests(type, 2))) else character()
       extras <- c("Response status counts" = "counts", "Graph" = "graph")
       if (type == "free response")
         extras <- c(extras, "Free responses" = "free")
-      else if (length(tests))
-        extras <- c(extras, "Statistical test" = "test")
       choices <- if (type == "multiselect")
         sort(unique(unlist(frame$values[frame$status == "valid"]))) else NULL
-      tags$details(
+      tags$div(
         style = "border:1px solid #ddd;padding:8px;margin-bottom:8px",
-        tags$summary(paste(question, "(", type, ")")),
-        selectInput(paste0("report_keys_", i), "Group by", choices = options,
-                    selected = keys, multiple = TRUE),
-        selectInput(paste0("report_group_", i), "Show responses from",
-                    choices = c("All groups" = "__all_groups__",
-                                stats::setNames(groups, groups))),
-        checkboxGroupInput(paste0("report_sections_", i), "Also include",
-                           choices = extras),
-        selectInput(paste0("report_graph_", i), "Graph",
-                    choices = graph_options(type)),
-        if (length(tests)) selectInput(paste0("report_test_", i), "Test",
-                                      choices = tests),
+        checkboxInput(paste0("report_include_", i),
+                      paste(question, "(", type, ")"), value = TRUE),
+        if (type != "free response") selectInput(paste0("report_test_", i),
+          "Add a group comparison test",
+          choices = c("No test" = "__none__", stats::setNames(tests, tests))),
+        if (type != "free response") textOutput(paste0("report_test_description_", i)),
         if (length(choices)) selectInput(paste0("report_choice_", i),
                                         "Multiselect option to test", choices = choices),
-        textAreaInput(paste0("report_note_", i), "Notes", rows = 2)
+        tags$details(tags$summary("More options"),
+          selectInput(paste0("report_keys_", i), "Group by", choices = options,
+                      selected = keys, multiple = TRUE),
+          selectInput(paste0("report_group_", i), "Summary view",
+                      choices = c("Tally all responses together" = "__tally__",
+                                  "Each group" = "__all_groups__",
+                                  stats::setNames(groups, groups))),
+          checkboxGroupInput(paste0("report_sections_", i), "Also include",
+                             choices = extras),
+          selectInput(paste0("report_graph_", i), "Graph",
+                      choices = graph_options(type)),
+          textAreaInput(paste0("report_note_", i), "Notes", rows = 2))
       )
     }))
+  })
+
+  observeEvent(report_questions_available(), {
+    for (i in seq_along(report_questions_available())) local({
+      index <- i
+      output[[paste0("report_test_description_", index)]] <- renderText({
+        method <- input[[paste0("report_test_", index)]]
+        if (is.null(method) || identical(method, "__none__")) return(NULL)
+        test_description(method)
+      })
+    })
   })
 
   observe({
@@ -349,19 +387,24 @@ server <- function(input, output, session) {
       frame <- analysis_frame(surveys, questions[i], keys)
       groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
       updateSelectInput(session, paste0("report_group_", i),
-        choices = c("All groups" = "__all_groups__", stats::setNames(groups, groups)),
-        selected = "__all_groups__")
-      tests <- available_tests(frame$type[1], length(groups))
-      updateSelectInput(session, paste0("report_test_", i), choices = tests,
-        selected = if (length(tests)) unname(tests[1]) else character())
+        choices = c("Tally all responses together" = "__tally__",
+                    "Each group" = "__all_groups__", stats::setNames(groups, groups)),
+        selected = "__tally__")
+      tests <- if (length(groups) >= 2)
+        unique(c(available_tests(frame$type[1], length(groups)),
+                 available_tests(frame$type[1], 2))) else character()
+      updateSelectInput(session, paste0("report_test_", i),
+        choices = c("No test" = "__none__", stats::setNames(tests, tests)),
+        selected = "__none__")
     }
   })
 
   report_entries <- reactive({
     surveys <- loaded()
     questions <- report_questions_available()
-    selected <- intersect(questions, input$report_questions)
-    lapply(which(questions %in% selected), function(i) {
+    selected <- which(vapply(seq_along(questions), function(i)
+      !identical(input[[paste0("report_include_", i)]], FALSE), logical(1)))
+    lapply(selected, function(i) {
       question <- questions[i]
       options <- group_key_options(surveys, question)
       keys <- input[[paste0("report_keys_", i)]]
@@ -371,13 +414,16 @@ server <- function(input, output, session) {
       type <- frame$type[1]
       groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
       group <- input[[paste0("report_group_", i)]]
-      if (!length(group) || !group %in% c("__all_groups__", groups))
-        group <- "__all_groups__"
+      if (!length(group) || !group %in% c("__tally__", "__all_groups__", groups))
+        group <- "__tally__"
       sections <- input[[paste0("report_sections_", i)]]
-      tests <- available_tests(type, length(groups))
+      tests <- unique(c(available_tests(type, length(groups)),
+                        available_tests(type, 2)))
       test <- input[[paste0("report_test_", i)]]
-      if (!length(test) || !test %in% unname(tests))
-        test <- if (length(tests)) unname(tests[1]) else NULL
+      if (!length(test) || !test %in% tests || length(groups) < 2)
+        test <- NULL
+      else
+        sections <- c(sections, "test")
       graphs <- graph_options(type)
       graph <- input[[paste0("report_graph_", i)]]
       if (!length(graph) || !graph %in% unname(graphs))
@@ -404,7 +450,8 @@ server <- function(input, output, session) {
       x <- entries[[i]]
       data.frame(order = i, question = x$question,
         group_by = report_group_label(x$group_keys),
-        group = if (identical(x$group, "__all_groups__")) "All groups" else x$group,
+        group = if (identical(x$group, "__tally__")) "All responses together"
+          else if (identical(x$group, "__all_groups__")) "Each group" else x$group,
         included = paste(c("Basic summary", x$sections), collapse = ", "))
     }))
   })

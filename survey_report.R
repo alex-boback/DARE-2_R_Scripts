@@ -53,7 +53,9 @@ report_plot_uri <- function(frame, graph, question) {
 report_entry_html <- function(entry, surveys) {
   full <- analysis_frame(surveys, entry$question, entry$group_keys)
   view <- full
-  if (!identical(entry$group, "__all_groups__"))
+  if (identical(entry$group, "__tally__"))
+    view$group[!is.na(view$group)] <- "All responses"
+  else if (!identical(entry$group, "__all_groups__"))
     view <- full[!is.na(full$group) & full$group == entry$group, , drop = FALSE]
   type <- full$type[1]
   section <- c(
@@ -62,8 +64,9 @@ report_entry_html <- function(entry, surveys) {
            " &nbsp; <strong>Grouped by:</strong> ",
            report_escape(report_group_label(entry$group_keys)),
            " &nbsp; <strong>View:</strong> ",
-           report_escape(if (identical(entry$group, "__all_groups__"))
-             "All groups" else entry$group), "</p>")
+           report_escape(if (identical(entry$group, "__tally__"))
+             "All responses together" else if (identical(entry$group, "__all_groups__"))
+               "Each group" else entry$group), "</p>")
   )
   if (nzchar(entry$note))
     section <- c(section, paste0("<p>", report_escape(entry$note), "</p>"))
@@ -99,9 +102,10 @@ report_entry_html <- function(entry, surveys) {
                  graph_html)
   }
   if ("test" %in% entry$sections) {
-    result <- tryCatch(run_question_test(full, entry$test, entry$choice),
+    result <- tryCatch(comparison_question_test(full, entry$test, entry$choice),
                        error = function(e) list(error = conditionMessage(e)))
-    section <- c(section, "<h3>Statistical test across all groups</h3>",
+    section <- c(section, "<h3>Group comparison test</h3>",
+                 paste0("<p>", report_escape(test_description(entry$test)), "</p>"),
                  paste0("<pre>", report_escape(report_test_text(result)),
                         "</pre>"))
   }
