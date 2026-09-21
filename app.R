@@ -1,5 +1,6 @@
 library(shiny)
 source("survey_app_core.R")
+source("survey_report.R")
 
 ui <- fluidPage(
   titlePanel("Survey analysis"),
@@ -10,7 +11,7 @@ ui <- fluidPage(
       br(),
       fileInput("files", "Upload survey files", multiple = TRUE,
                 accept = c(".csv", ".xls", ".xlsx")),
-      helpText("Each CSV or Excel worksheet has question names in row 1, types in row 2, and responses below. Every sheet needs one group key column containing its time-period labels."),
+      helpText("Each CSV or Excel worksheet has question names in row 1, types in row 2, and responses below. Mark one or more columns as group key."),
       actionButton("load_data", "Add uploaded data", class = "btn-primary"),
       actionButton("clear_data", "Clear loaded data"),
       br(), br(),
@@ -27,8 +28,9 @@ ui <- fluidPage(
         column(4,
           selectInput("question", "Question", choices = NULL),
           textOutput("question_type"),
+          selectInput("group_keys", "Group by", choices = NULL, multiple = TRUE),
           selectInput("view_group", "Show responses from",
-                      choices = c("All groups" = "")),
+                      choices = c("All groups" = "__all_groups__")),
           selectInput("graph", "Graph", choices = NULL),
           helpText("The group filter changes the overview. Tests compare all loaded groups."),
           selectInput("test", "Statistical test", choices = NULL),
@@ -42,10 +44,46 @@ ui <- fluidPage(
           h4("Summary"),
           tableOutput("summary"),
           tableOutput("numeric_summary"),
+          tableOutput("ordered_summary"),
           h4("Statistical result"),
           verbatimTextOutput("test_result"),
           uiOutput("free_heading"),
           tableOutput("free_responses")
+        )
+      )
+    ),
+    tabPanel(
+      "Report",
+      br(),
+      fluidRow(
+        column(4,
+          textInput("report_title", "Report title", value = "Survey analysis report"),
+          selectInput("report_question", "Question", choices = NULL),
+          textOutput("report_type"),
+          selectInput("report_group_keys", "Group by", choices = NULL,
+                      multiple = TRUE),
+          selectInput("report_group", "Show responses from",
+                      choices = c("All groups" = "__all_groups__")),
+          uiOutput("report_sections_ui"),
+          selectInput("report_graph", "Graph to include", choices = NULL),
+          selectInput("report_test", "Test to include", choices = NULL),
+          uiOutput("report_choice_ui"),
+          textAreaInput("report_note", "Notes for this question", rows = 3),
+          helpText("The group choice filters descriptive sections. Tests use all loaded groups."),
+          actionButton("add_report", "Add question section", class = "btn-primary"),
+          textOutput("report_message"),
+          tags$hr(),
+          selectInput("remove_report_item", "Added section to remove", choices = NULL),
+          actionButton("remove_report", "Remove selected"),
+          br(), br(),
+          downloadButton("download_report", "Download HTML report")
+        ),
+        column(8,
+          h4("Included sections"),
+          tableOutput("report_list"),
+          h4("Report preview"),
+          tags$style(".survey-report img{max-width:100%;height:auto}.survey-report section{border-top:1px solid #ccc;padding:16px 0}.survey-report pre{white-space:pre-wrap}.survey-report table{border-collapse:collapse;width:100%;margin:12px 0}.survey-report th,.survey-report td{border:1px solid #ccc;padding:6px 9px;text-align:left}"),
+          uiOutput("report_preview")
         )
       )
     )
@@ -55,6 +93,13 @@ ui <- fluidPage(
 server <- function(input, output, session) {
   data_state <- reactiveVal(list(surveys = NULL, loaded_paths = character(),
                                  error = NULL))
+  report_entries <- reactiveVal(list())
+  report_message <- reactiveVal("")
+  report_title <- reactive({
+    title <- input$report_title
+    if (is.null(title) || !nzchar(trimws(title)))
+      "Survey analysis report" else trimws(title)
+  })
 
   observeEvent(input$load_data, {
     previous <- data_state()
@@ -77,6 +122,8 @@ server <- function(input, output, session) {
         names(x$types)[x$types != "group key"])))
       updateSelectInput(session, "question", choices = questions,
                         selected = if (length(questions)) questions[1] else character())
+      updateSelectInput(session, "report_question", choices = questions,
+                        selected = if (length(questions)) questions[1] else character())
       updateTabsetPanel(session, "workflow", selected = "Analyze")
     }
   })
@@ -84,9 +131,21 @@ server <- function(input, output, session) {
   observeEvent(input$clear_data, {
     data_state(list(surveys = NULL, loaded_paths = character(), error = NULL))
     updateSelectInput(session, "question", choices = character())
+    updateSelectInput(session, "group_keys", choices = character())
     updateSelectInput(session, "test", choices = character())
-    updateSelectInput(session, "view_group", choices = c("All groups" = ""))
+    updateSelectInput(session, "view_group",
+                      choices = c("All groups" = "__all_groups__"),
+                      selected = "__all_groups__")
     updateSelectInput(session, "graph", choices = character())
+    updateSelectInput(session, "report_question", choices = character())
+    updateSelectInput(session, "report_group_keys", choices = character())
+    updateSelectInput(session, "report_group",
+                      choices = c("All groups" = "__all_groups__"),
+                      selected = "__all_groups__")
+    updateSelectInput(session, "report_graph", choices = character())
+    updateSelectInput(session, "report_test", choices = character())
+    report_entries(list())
+    report_message("")
     updateTabsetPanel(session, "workflow", selected = "Load data")
   })
 
@@ -108,10 +167,8 @@ server <- function(input, output, session) {
   output$sources <- renderTable({
     surveys <- loaded()
     do.call(rbind, lapply(surveys, function(x) {
-      periods <- unique(trimws(x$data[[x$key]]))
-      periods <- periods[!is.na(periods) & nzchar(periods)]
       data.frame(source = x$source, rows = nrow(x$data),
-                 group_key = x$key, periods = paste(periods, collapse = ", "))
+                 group_keys = paste(x$keys, collapse = ", "))
     }))
   })
 
@@ -127,9 +184,20 @@ server <- function(input, output, session) {
     }))
   })
 
+  observeEvent(list(loaded(), input$question), {
+    req(input$question)
+    options <- group_key_options(loaded(), input$question)
+    updateSelectInput(session, "group_keys", choices = options,
+                      selected = if (length(options)) unname(options[1]) else character())
+  })
+
   current_frame <- reactive({
     req(loaded(), input$question)
-    analysis_frame(loaded(), input$question)
+    options <- group_key_options(loaded(), input$question)
+    selected <- input$group_keys
+    if (!length(selected) || !all(selected %in% unname(options)))
+      selected <- default_group_keys(loaded(), input$question)
+    analysis_frame(loaded(), input$question, selected)
   })
 
   output$question_type <- renderText({
@@ -141,8 +209,9 @@ server <- function(input, output, session) {
     groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
     tests <- available_tests(frame$type[1], length(groups))
     updateSelectInput(session, "view_group",
-                      choices = c("All groups" = "", stats::setNames(groups, groups)),
-                      selected = "")
+                      choices = c("All groups" = "__all_groups__",
+                                  stats::setNames(groups, groups)),
+                      selected = "__all_groups__")
     graphs <- graph_options(frame$type[1])
     updateSelectInput(session, "graph", choices = graphs,
                       selected = if (length(graphs)) graphs[1] else character())
@@ -152,7 +221,8 @@ server <- function(input, output, session) {
 
   view_frame <- reactive({
     frame <- current_frame()
-    if (!is.null(input$view_group) && nzchar(input$view_group) &&
+    if (!is.null(input$view_group) &&
+        !identical(input$view_group, "__all_groups__") &&
         input$view_group %in% frame$group)
       frame <- frame[!is.na(frame$group) & frame$group == input$view_group,
                      , drop = FALSE]
@@ -175,6 +245,8 @@ server <- function(input, output, session) {
 
   output$summary <- renderTable(summarize_question(view_frame()), digits = 2)
   output$numeric_summary <- renderTable(summarize_numeric(view_frame()),
+                                        digits = 3)
+  output$ordered_summary <- renderTable(summarize_ordered(view_frame()),
                                         digits = 3)
 
   output$chart <- renderPlot({
@@ -209,21 +281,8 @@ server <- function(input, output, session) {
       return()
     }
     x <- result_state()
-    if (is.null(x)) {
-      cat("Choose a test and click Run test.")
-    } else if (!is.null(x$error)) {
-      cat(x$error)
-    } else if (!is.null(x$pairwise)) {
-      cat(x$method, "\n")
-      print(x$pairwise)
-      cat(x$note, "\n")
-    } else {
-      cat(x$method, "\nStatistic:", signif(x$statistic, 4),
-          "\np-value:", signif(x$p_value, 4), "\n")
-      if (!is.null(x$df) && !all(is.na(x$df)))
-        cat("Degrees of freedom:", paste(signif(x$df, 4), collapse = ", "), "\n")
-      if (nzchar(x$note)) cat(x$note, "\n")
-    }
+    if (is.null(x)) cat("Choose a test and click Run test.")
+    else cat(report_test_text(x))
   })
 
   output$free_heading <- renderUI({
@@ -236,6 +295,151 @@ server <- function(input, output, session) {
     data.frame(source = valid$source, row = valid$row, period = valid$group,
                response = vapply(valid$values, `[[`, "", 1))
   })
+
+  observeEvent(list(loaded(), input$report_question), {
+    req(input$report_question)
+    options <- group_key_options(loaded(), input$report_question)
+    updateSelectInput(session, "report_group_keys", choices = options,
+                      selected = if (length(options)) unname(options[1]) else character())
+  })
+
+  report_keys <- reactive({
+    req(loaded(), input$report_question)
+    options <- group_key_options(loaded(), input$report_question)
+    selected <- input$report_group_keys
+    if (!length(selected) || !all(selected %in% unname(options)))
+      selected <- default_group_keys(loaded(), input$report_question)
+    selected
+  })
+
+  report_frame <- reactive({
+    analysis_frame(loaded(), input$report_question, report_keys())
+  })
+
+  output$report_type <- renderText({
+    paste("Question type:", report_frame()$type[1])
+  })
+
+  observeEvent(report_frame(), {
+    frame <- report_frame()
+    groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
+    updateSelectInput(session, "report_group",
+      choices = c("All groups" = "__all_groups__", stats::setNames(groups, groups)),
+      selected = "__all_groups__")
+    graphs <- graph_options(frame$type[1])
+    updateSelectInput(session, "report_graph", choices = graphs,
+                      selected = if (length(graphs)) graphs[1] else character())
+    tests <- available_tests(frame$type[1], length(groups))
+    updateSelectInput(session, "report_test", choices = tests,
+                      selected = if (length(tests)) tests[1] else character())
+  })
+
+  output$report_sections_ui <- renderUI({
+    type <- report_frame()$type[1]
+    sections <- c("Response counts" = "counts", "Summary" = "summary",
+                  "Graph" = "graph")
+    if (type == "free response")
+      sections <- c(sections, "Free responses" = "free")
+    else
+      sections <- c(sections, "Statistical test" = "test")
+    checkboxGroupInput("report_sections", "Include",
+      choices = sections,
+      selected = if (type == "free response")
+        c("counts", "graph", "free") else c("counts", "summary", "graph", "test"))
+  })
+
+  output$report_choice_ui <- renderUI({
+    frame <- report_frame()
+    if (frame$type[1] != "multiselect") return(NULL)
+    values <- frame$values[frame$status == "valid"]
+    selectInput("report_choice", "Multiselect choice to test",
+                choices = sort(unique(unlist(values))))
+  })
+
+  observeEvent(input$add_report, {
+    tryCatch({
+      frame <- report_frame()
+      sections <- input$report_sections
+      if (!length(sections)) stop("Select at least one section.")
+      selected_group <- if (is.null(input$report_group))
+        "__all_groups__" else input$report_group
+      groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
+      if (!selected_group %in% c("__all_groups__", groups))
+        stop("Select a group for this question.")
+      if ("graph" %in% sections &&
+          !input$report_graph %in% graph_options(frame$type[1]))
+        stop("Select a graph for this question.")
+      if ("test" %in% sections) {
+        if (is.null(input$report_test) ||
+            !input$report_test %in% available_tests(frame$type[1], length(groups)))
+          stop("Select an available test for this question.")
+        if (frame$type[1] == "multiselect" &&
+            (is.null(input$report_choice) || !nzchar(input$report_choice)))
+          stop("Select a multiselect choice to test.")
+      }
+      entry <- list(
+        question = input$report_question,
+        group_keys = report_keys(),
+        group = selected_group,
+        sections = sections,
+        graph = input$report_graph,
+        test = input$report_test,
+        choice = input$report_choice,
+        note = if (is.null(input$report_note)) "" else trimws(input$report_note)
+      )
+      report_entries(c(report_entries(), list(entry)))
+      report_message(paste("Added", entry$question, "to the report."))
+    }, error = function(e) report_message(conditionMessage(e)))
+  })
+  output$report_message <- renderText(report_message())
+
+  observeEvent(report_entries(), {
+    entries <- report_entries()
+    labels <- vapply(seq_along(entries), function(i)
+      paste(i, entries[[i]]$question, if (identical(entries[[i]]$group,
+            "__all_groups__")) "(all groups)" else paste0("(", entries[[i]]$group, ")")),
+      "")
+    updateSelectInput(session, "remove_report_item",
+                      choices = stats::setNames(as.character(seq_along(entries)),
+                                                labels))
+  })
+
+  observeEvent(input$remove_report, {
+    index <- suppressWarnings(as.integer(input$remove_report_item))
+    entries <- report_entries()
+    if (length(index) == 1 && !is.na(index) && index %in% seq_along(entries)) {
+      report_entries(entries[-index])
+      report_message("Selected section removed.")
+    }
+  })
+
+  output$report_list <- renderTable({
+    entries <- report_entries()
+    if (!length(entries)) return(NULL)
+    do.call(rbind, lapply(seq_along(entries), function(i) {
+      x <- entries[[i]]
+      data.frame(order = i, question = x$question,
+        group_by = report_group_label(x$group_keys),
+        group = if (identical(x$group, "__all_groups__")) "All groups" else x$group,
+        included = paste(x$sections, collapse = ", "))
+    }))
+  })
+
+  output$report_preview <- renderUI({
+    entries <- report_entries()
+    if (!length(entries)) return(p("Add a question section to preview the report."))
+    HTML(report_body_html(entries, loaded(), report_title()))
+  })
+
+  output$download_report <- downloadHandler(
+    filename = function() "survey-analysis-report.html",
+    content = function(file) {
+      entries <- report_entries()
+      req(length(entries))
+      html <- report_document_html(entries, loaded(), report_title())
+      writeLines(enc2utf8(html), file, useBytes = TRUE)
+    }
+  )
 }
 
 shinyApp(ui, server)

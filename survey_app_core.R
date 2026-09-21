@@ -15,19 +15,39 @@ read_two_row_survey <- function(path, filename, sheet = 1) {
   } else stop("Upload a CSV, XLS, or XLSX file.")
   if (nrow(raw) < 2) stop("The file needs a question row and a type row.")
   questions <- trimws(as.character(unlist(raw[1, ], use.names = FALSE)))
-  types <- tolower(trimws(as.character(unlist(raw[2, ], use.names = FALSE))))
-  types[types == "linkert"] <- "likert"
-  allowed <- c("likert", "continuous", "multiselect", "single select",
-               "group key", "free response")
+  type_cells <- trimws(as.character(unlist(raw[2, ], use.names = FALSE)))
+  allowed <- c("linkert", "ordered categorical", "continuous",
+               "multiselect", "single select", "group key", "free response")
   if (anyNA(questions) || any(!nzchar(questions)) || anyDuplicated(questions))
     stop("Question names in row 1 must be filled and unique.")
-  if (anyNA(types) || any(!types %in% allowed))
-    stop("Row 2 types must be: likert, continuous, multiselect, single select, group key, or free response.")
+  types <- character(length(questions))
+  orders <- vector("list", length(questions))
+  for (i in seq_along(type_cells)) {
+    cell <- type_cells[i]
+    if (is.na(cell) || !nzchar(cell)) stop("Every question needs a type in row 2.")
+    if (grepl("^ordered categorical\\s*:", cell, ignore.case = TRUE)) {
+      specification <- trimws(sub("^[^:]*:", "", cell))
+      if (grepl("^;|;\\s*;|;\\s*$", specification))
+        stop("Ordered categorical levels cannot be blank: ", questions[i])
+      levels <- trimws(strsplit(specification, ";", fixed = TRUE)[[1]])
+      if (length(levels) < 2 || any(!nzchar(levels)) || anyDuplicated(levels))
+        stop("List at least two distinct ordered levels for ", questions[i])
+      types[i] <- "ordered categorical"
+      orders[[i]] <- levels
+    } else {
+      types[i] <- tolower(cell)
+      if (!types[i] %in% allowed)
+        stop("Unsupported type for ", questions[i], ": ", cell)
+      if (types[i] == "ordered categorical")
+        stop("Ordered categorical needs levels in row 2, for example: ordered categorical: Low; Medium; High")
+    }
+  }
   data <- raw[-c(1, 2), , drop = FALSE]
   if (!nrow(data)) stop("The file has no response rows.")
   names(data) <- questions
   rownames(data) <- NULL
-  list(data = data, types = setNames(types, questions))
+  list(data = data, types = setNames(types, questions),
+       orders = setNames(orders, questions))
 }
 
 load_survey_files <- function(uploads, existing = list()) {
@@ -46,9 +66,9 @@ load_survey_files <- function(uploads, existing = list()) {
     for (sheet in sheets) {
       survey <- read_two_row_survey(path, filename, sheet)
       keys <- names(survey$types)[survey$types == "group key"]
-      if (length(keys) != 1)
-        stop(filename, " / ", sheet, " needs exactly one group key column.")
-      survey$key <- keys
+      if (!length(keys))
+        stop(filename, " / ", sheet, " needs at least one group key column.")
+      survey$keys <- keys
       survey$source <- if (ext == "csv") filename else paste(filename, sheet, sep = " / ")
       surveys[[length(surveys) + 1L]] <- survey
     }
@@ -59,11 +79,17 @@ load_survey_files <- function(uploads, existing = list()) {
     types <- types[!is.na(types)]
     if (length(types) > 1)
       stop("Question type differs between sources: ", question)
+    if (identical(types, "ordered categorical")) {
+      orders <- lapply(Filter(function(x) question %in% names(x$types), surveys),
+                       function(x) x$orders[[question]])
+      if (!all(vapply(orders, identical, logical(1), orders[[1]])))
+        stop("Ordered levels differ between sources: ", question)
+    }
   }
   surveys
 }
 
-parse_question <- function(values, type, delimiter = ";") {
+parse_question <- function(values, type, delimiter = ";", ordered_levels = NULL) {
   out <- vector("list", length(values))
   status <- rep("valid", length(values))
   for (i in seq_along(values)) {
@@ -78,8 +104,13 @@ parse_question <- function(values, type, delimiter = ";") {
       status[i] <- "invalid"
       next
     }
-    if (type == "likert" && (length(tokens) != 1 ||
+    if (type == "linkert" && (length(tokens) != 1 ||
                              !tokens %in% as.character(1:5))) {
+      status[i] <- "invalid"
+      next
+    }
+    if (type == "ordered categorical" &&
+        (length(tokens) != 1 || !tokens %in% ordered_levels)) {
       status[i] <- "invalid"
       next
     }
@@ -93,19 +124,50 @@ parse_question <- function(values, type, delimiter = ";") {
   list(values = out, status = status)
 }
 
-analysis_frame <- function(surveys, question, delimiter = ";") {
+group_key_options <- function(surveys, question) {
+  relevant <- Filter(function(x) question %in% names(x$types), surveys)
+  if (!length(relevant)) return(character())
+  shared <- Reduce(intersect, lapply(relevant, function(x) x$keys))
+  if (length(shared)) return(stats::setNames(shared, shared))
+  c("First group key in each sheet" = "__first_group_key__")
+}
+
+default_group_keys <- function(surveys, question) {
+  unname(group_key_options(surveys, question)[1])
+}
+
+analysis_frame <- function(surveys, question, group_keys = NULL,
+                           delimiter = ";") {
+  if (is.null(group_keys) || !length(group_keys))
+    group_keys <- default_group_keys(surveys, question)
+  if (!length(group_keys) || anyDuplicated(group_keys) ||
+      ("__first_group_key__" %in% group_keys && length(group_keys) > 1))
+    stop("Choose one or more group keys, or the first-key option by itself.")
   pieces <- lapply(surveys, function(survey) {
     if (!question %in% names(survey$types)) return(NULL)
     type <- survey$types[[question]]
-    parsed <- parse_question(survey$data[[question]], type, delimiter)
-    groups <- parse_question(survey$data[[survey$key]], "group key")
-    group <- vapply(groups$values, function(x)
-      if (length(x)) x[1] else NA_character_, "")
+    parsed <- parse_question(survey$data[[question]], type, delimiter,
+                             survey$orders[[question]])
+    keys <- if (identical(group_keys, "__first_group_key__"))
+      survey$keys[1] else group_keys
+    if (!all(keys %in% survey$keys))
+      stop("Selected group key(s) missing from ", survey$source, ": ",
+           paste(setdiff(keys, survey$keys), collapse = ", "))
+    key_values <- lapply(keys, function(key)
+      trimws(as.character(survey$data[[key]])))
+    group <- vapply(seq_len(nrow(survey$data)), function(i) {
+      values <- vapply(key_values, `[[`, "", i)
+      if (anyNA(values) || any(!nzchar(values))) return(NA_character_)
+      if (length(keys) == 1) values else
+        paste(paste0(keys, "=", values), collapse = " | ")
+    }, "")
     status <- parsed$status
     status[is.na(group)] <- "missing group"
     data.frame(source = survey$source, row = seq_along(status),
                group = group, status = status, type = type,
-               values = I(parsed$values))
+               values = I(parsed$values),
+               ordered_levels = I(rep(list(survey$orders[[question]]),
+                                      length(status))))
   })
   pieces <- Filter(Negate(is.null), pieces)
   if (!length(pieces)) stop("Question was not found in loaded data: ", question)
@@ -117,7 +179,7 @@ analysis_frame <- function(surveys, question, delimiter = ";") {
 available_tests <- function(type, groups) {
   if (groups < 2) return(character())
   if (type == "free response") return(character())
-  if (type == "likert") {
+  if (type %in% c("linkert", "ordered categorical")) {
     tests <- "Kruskal-Wallis"
     if (groups == 2) tests <- c("Mann-Whitney U", "Brunner-Munzel", tests)
     if (groups > 2) tests <- c(tests, "Dunn post-hoc")
@@ -143,7 +205,7 @@ summarize_question <- function(frame) {
   groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
   if (!length(groups)) return(data.frame())
   valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
-  if (frame$type[1] == "likert") {
+  if (frame$type[1] == "linkert") {
     counts <- do.call(rbind, lapply(groups, function(g) {
       x <- as.numeric(unlist(valid$values[valid$group == g]))
       data.frame(group = g, response = as.character(1:5),
@@ -155,7 +217,8 @@ summarize_question <- function(frame) {
                  n = sum(valid$group == g),
                  valid_n = sum(valid$group == g))))
   } else {
-    choices <- sort(unique(unlist(valid$values)))
+    choices <- if (frame$type[1] == "ordered categorical")
+      frame$ordered_levels[[1]] else sort(unique(unlist(valid$values)))
     if (!length(choices)) return(data.frame())
     counts <- do.call(rbind, lapply(groups, function(g) {
       rows <- valid$values[valid$group == g]
@@ -172,7 +235,7 @@ summarize_question <- function(frame) {
 }
 
 summarize_numeric <- function(frame) {
-  if (!frame$type[1] %in% c("likert", "continuous")) return(NULL)
+  if (!frame$type[1] %in% c("linkert", "continuous")) return(NULL)
   valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
   groups <- unique(valid$group)
   if (!length(groups)) return(NULL)
@@ -191,9 +254,27 @@ summarize_numeric <- function(frame) {
   }))
 }
 
+summarize_ordered <- function(frame) {
+  if (frame$type[1] != "ordered categorical") return(NULL)
+  valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
+  groups <- unique(valid$group)
+  if (!length(groups)) return(NULL)
+  levels <- frame$ordered_levels[[1]]
+  do.call(rbind, lapply(groups, function(group) {
+    ranks <- match(unlist(valid$values[valid$group == group]), levels)
+    middle <- median(ranks)
+    label <- if (middle %% 1 == 0) levels[middle] else
+      paste(levels[floor(middle)], levels[ceiling(middle)], sep = " / ")
+    data.frame(group = group, n = length(ranks),
+               median_level = label, median_rank = middle,
+               iqr_rank = IQR(ranks))
+  }))
+}
+
 graph_options <- function(type) {
   switch(type,
-    likert = c("100% stacked bars", "Response bars", "Boxplot"),
+    linkert = c("100% stacked bars", "Response bars", "Boxplot"),
+    `ordered categorical` = c("100% stacked bars", "Response bars", "Dot plot"),
     continuous = c("Boxplot", "Histogram", "Density curves", "Strip chart"),
     multiselect = c("Grouped bars", "Dot plot"),
     `single select` = c("Grouped bars", "Stacked bars", "Dot plot"),
@@ -278,7 +359,7 @@ plot_question <- function(frame, graph, question) {
              xlab = "Percent of valid responses", main = question)
   } else {
     beside <- graph %in% c("Grouped bars", "Response bars")
-    colors <- if (type == "likert")
+    colors <- if (type == "linkert")
       c("#b45050", "#d99577", "#d4d4d4", "#78b5ad", "#247f7a")
     else grDevices::hcl.colors(nrow(values), "Set 2")
     barplot(values, beside = beside, col = colors,
@@ -295,8 +376,10 @@ run_question_test <- function(frame, method, choice = NULL) {
   valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
   groups <- unique(valid$group)
   if (length(groups) < 2) stop("At least two groups need valid responses.")
-  if (frame$type[1] %in% c("likert", "continuous")) {
-    y <- as.numeric(unlist(valid$values))
+  if (frame$type[1] %in% c("linkert", "ordered categorical", "continuous")) {
+    y <- if (frame$type[1] == "ordered categorical")
+      match(unlist(valid$values), frame$ordered_levels[[1]]) else
+        as.numeric(unlist(valid$values))
     g <- factor(valid$group, levels = groups)
     data <- data.frame(y = y, g = g)
     if (method == "Mann-Whitney U") {
@@ -371,7 +454,8 @@ run_question_test <- function(frame, method, choice = NULL) {
       fit <- suppressWarnings(chisq.test(table))
     } else stop("Select a supported test.")
   }
-  list(method = method, statistic = unname(fit$statistic),
+  list(method = method,
+       statistic = if (is.null(fit$statistic)) NA_real_ else unname(fit$statistic),
        df = if (!is.null(fit$parameter)) unname(fit$parameter) else NA_real_,
        p_value = fit$p.value,
        note = if (method == "Chi-square" && any(fit$expected < 5))
