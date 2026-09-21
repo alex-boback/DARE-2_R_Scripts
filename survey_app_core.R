@@ -233,6 +233,14 @@ summarize_question <- function(frame) {
   counts
 }
 
+present_question_summary <- function(frame) {
+  summary <- summarize_question(frame)
+  if (frame$type[1] == "multiselect" && !is.null(summary) &&
+      "response" %in% names(summary))
+    names(summary)[names(summary) == "response"] <- "option"
+  summary
+}
+
 summarize_numeric <- function(frame) {
   if (!frame$type[1] %in% c("linkert", "continuous")) return(NULL)
   valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]

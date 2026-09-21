@@ -72,20 +72,19 @@ report_entry_html <- function(entry, surveys) {
       table(Group = view$group, Status = view$status, useNA = "ifany"))
     counts <- data.frame(group = rownames(counts), counts,
                          check.names = FALSE, row.names = NULL)
-    section <- c(section, "<h3>Response counts</h3>", report_table(counts))
+    section <- c(section, "<h3>Response status counts</h3>",
+                 report_table(counts))
   }
-  if ("summary" %in% entry$sections) {
-    section <- c(section, "<h3>Summary</h3>")
-    if (type == "multiselect")
-      section <- c(section,
-        "<p>Counts are per option, once per respondent. Percentages can add above 100%.</p>")
-    categorical <- summarize_question(view)
-    numeric <- summarize_numeric(view)
-    ordered <- summarize_ordered(view)
-    if (!is.null(categorical)) section <- c(section, report_table(categorical))
-    if (!is.null(numeric)) section <- c(section, report_table(numeric))
-    if (!is.null(ordered)) section <- c(section, report_table(ordered))
-  }
+  section <- c(section, "<h3>Basic summary</h3>")
+  if (type == "multiselect")
+    section <- c(section,
+      "<p>Counts are per option, once per respondent. Percentages can add above 100%.</p>")
+  categorical <- present_question_summary(view)
+  numeric <- summarize_numeric(view)
+  ordered <- summarize_ordered(view)
+  if (!is.null(categorical)) section <- c(section, report_table(categorical))
+  if (!is.null(numeric)) section <- c(section, report_table(numeric))
+  if (!is.null(ordered)) section <- c(section, report_table(ordered))
   if ("graph" %in% entry$sections) {
     graph_html <- tryCatch({
       if (!any(view$status == "valid" & !is.na(view$group)))
@@ -118,7 +117,7 @@ report_entry_html <- function(entry, surveys) {
 }
 
 report_body_html <- function(entries, surveys, title) {
-  if (!length(entries)) return("<p>Add a question section to preview the report.</p>")
+  if (!length(entries)) return("<p>Select questions to preview the report.</p>")
   sections <- vapply(entries, report_entry_html, "", surveys = surveys)
   paste0("<div class='survey-report'><h1>", report_escape(title),
          "</h1><p>", length(surveys), " loaded sheets. ",

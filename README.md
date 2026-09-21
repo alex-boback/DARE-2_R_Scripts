@@ -52,6 +52,10 @@ so option counts and percentages can sum above the number of respondents and
 100%. It uses the values as written, with no value mapping. Blank or invalid
 responses are excluded and counted.
 
+For multiselect questions, **Option counts** in Analyze and the report list
+each option separately. **Response status counts** tracks valid and missing
+respondents; it does not list option combinations.
+
 ## Analyze
 
 The **Analyze** tab lets you choose a question and one or more **Group by**
@@ -84,12 +88,12 @@ Free responses are displayed without an inferential test.
 
 ## Compile a report
 
-Use the **Report** tab to build an ordered report one question at a time.
-Choose a question, its **Group by** keys, and optionally a single resulting
-group for its descriptive sections.
-Select the response counts, summary, graph, statistical test, or free responses
-you want to include. You can add notes for each question, remove an added
-section, preview the full report, and download a self-contained HTML file.
+Use the **Report** tab to check the questions to include, or use **Select all**
+and **Clear selection**. Every selected question automatically includes a basic
+summary. Open a question's settings to choose its **Group by** keys, filter its
+descriptive sections to one group, and optionally include response status counts,
+a graph, a statistical test, free responses, or notes. The preview updates as you
+change the selection. Download the result as a self-contained HTML file.
 Statistical tests in the report use all loaded groups, even when its
 descriptive sections show one group. Reports are generated from the currently
 loaded data; clearing data also clears the report selection.
