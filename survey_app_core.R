@@ -30,65 +30,40 @@ read_two_row_survey <- function(path, filename, sheet = 1) {
   list(data = data, types = setNames(types, questions))
 }
 
-empty_mapping <- function() data.frame(
-  question = character(), period = character(), raw = character(),
-  mapped = character(), stringsAsFactors = FALSE)
-
-read_mapping_file <- function(path, filename) {
-  ext <- tolower(tools::file_ext(filename))
-  if (ext == "csv") {
-    x <- read.csv(path, colClasses = "character", check.names = FALSE,
-                  na.strings = character(), fileEncoding = "UTF-8-BOM")
-  } else if (ext %in% c("xls", "xlsx")) {
-    if (!requireNamespace("readxl", quietly = TRUE))
-      stop("Excel mapping files require readxl.")
-    x <- as.data.frame(readxl::read_excel(path, col_types = "text"))
-  } else stop("Mapping file must be CSV, XLS, or XLSX.")
-  required <- c("question", "period", "raw", "mapped")
-  if (!all(required %in% names(x)))
-    stop("Mapping file needs columns: question, period, raw, mapped.")
-  x <- x[, required, drop = FALSE]
-  for (name in required) x[[name]] <- trimws(as.character(x[[name]]))
-  x$period[is.na(x$period) | x$period == ""] <- "All"
-  if (anyNA(x$question) || anyNA(x$raw) || anyNA(x$mapped) ||
-      any(!nzchar(x$question)) || any(!nzchar(x$raw)) ||
-      any(!nzchar(x$mapped)) ||
-      any(!x$period %in% c("All", "Period 1", "Period 2")))
-    stop("Mappings need nonblank question, raw, and mapped values; period is All, Period 1, or Period 2.")
-  x
+load_survey_files <- function(uploads, existing = list()) {
+  if (is.null(uploads) || !nrow(uploads)) stop("Upload at least one file.")
+  surveys <- existing
+  for (i in seq_len(nrow(uploads))) {
+    filename <- uploads$name[i]
+    path <- uploads$datapath[i]
+    ext <- tolower(tools::file_ext(filename))
+    sheets <- if (ext == "csv") 1 else {
+      if (!ext %in% c("xls", "xlsx")) stop("Upload CSV, XLS, or XLSX files.")
+      if (!requireNamespace("readxl", quietly = TRUE))
+        stop("Excel uploads require readxl: install.packages('readxl')")
+      readxl::excel_sheets(path)
+    }
+    for (sheet in sheets) {
+      survey <- read_two_row_survey(path, filename, sheet)
+      keys <- names(survey$types)[survey$types == "group key"]
+      if (length(keys) != 1)
+        stop(filename, " / ", sheet, " needs exactly one group key column.")
+      survey$key <- keys
+      survey$source <- if (ext == "csv") filename else paste(filename, sheet, sep = " / ")
+      surveys[[length(surveys) + 1L]] <- survey
+    }
+  }
+  all_questions <- unique(unlist(lapply(surveys, function(x) names(x$types))))
+  for (question in all_questions) {
+    types <- unique(unlist(lapply(surveys, function(x) x$types[question])))
+    types <- types[!is.na(types)]
+    if (length(types) > 1)
+      stop("Question type differs between sources: ", question)
+  }
+  surveys
 }
 
-widget_mapping <- function(text, question, period) {
-  if (is.null(text) || !nzchar(trimws(text))) return(empty_mapping())
-  lines <- strsplit(text, "\n", fixed = TRUE)[[1]]
-  lines <- trimws(lines[nzchar(trimws(lines))])
-  parts <- strsplit(lines, "=>", fixed = TRUE)
-  if (any(lengths(parts) != 2))
-    stop("Each UI mapping line must be raw => mapped.")
-  raw <- trimws(vapply(parts, `[[`, "", 1))
-  mapped <- trimws(vapply(parts, `[[`, "", 2))
-  if (any(!nzchar(raw)) || any(!nzchar(mapped)))
-    stop("UI mappings cannot have a blank raw or mapped value.")
-  data.frame(question = question, period = period, raw = raw, mapped = mapped)
-}
-
-apply_mapping <- function(tokens, mappings, question, period) {
-  relevant <- mappings[mappings$question == question &
-                         mappings$period %in% c("All", period), , drop = FALSE]
-  if (!nrow(relevant)) return(tokens)
-  # Period-specific rules win within a source; UI rules win over file rules.
-  priority <- as.integer(relevant$period == period)
-  if ("source" %in% names(relevant))
-    priority <- priority + 2L * as.integer(relevant$source == "ui")
-  relevant <- relevant[order(priority), , drop = FALSE]
-  relevant <- relevant[!duplicated(relevant$raw, fromLast = TRUE), , drop = FALSE]
-  replacement <- setNames(relevant$mapped, relevant$raw)
-  hit <- tokens %in% names(replacement)
-  tokens[hit] <- unname(replacement[tokens[hit]])
-  tokens
-}
-
-parse_question <- function(values, type, question, period, mappings, delimiter) {
+parse_question <- function(values, type, delimiter = ";") {
   out <- vector("list", length(values))
   status <- rep("valid", length(values))
   for (i in seq_along(values)) {
@@ -103,7 +78,6 @@ parse_question <- function(values, type, question, period, mappings, delimiter) 
       status[i] <- "invalid"
       next
     }
-    tokens <- apply_mapping(tokens, mappings, question, period)
     if (type == "likert" && (length(tokens) != 1 ||
                              !tokens %in% as.character(1:5))) {
       status[i] <- "invalid"
@@ -119,34 +93,25 @@ parse_question <- function(values, type, question, period, mappings, delimiter) 
   list(values = out, status = status)
 }
 
-question_frame <- function(surveys, question, mappings, delimiter) {
-  type <- surveys[[1]]$types[[question]]
-  pieces <- lapply(seq_along(surveys), function(i) {
-    parsed <- parse_question(surveys[[i]]$data[[question]], type, question,
-                             paste("Period", i), mappings, delimiter)
-    data.frame(period = paste("Period", i),
-               row = seq_along(parsed$status), status = parsed$status,
+analysis_frame <- function(surveys, question, delimiter = ";") {
+  pieces <- lapply(surveys, function(survey) {
+    if (!question %in% names(survey$types)) return(NULL)
+    type <- survey$types[[question]]
+    parsed <- parse_question(survey$data[[question]], type, delimiter)
+    groups <- parse_question(survey$data[[survey$key]], "group key")
+    group <- vapply(groups$values, function(x)
+      if (length(x)) x[1] else NA_character_, "")
+    status <- parsed$status
+    status[is.na(group)] <- "missing group"
+    data.frame(source = survey$source, row = seq_along(status),
+               group = group, status = status, type = type,
                values = I(parsed$values))
   })
-  do.call(rbind, pieces)
-}
-
-analysis_frame <- function(surveys, question, comparison, group_question,
-                           mappings, delimiter) {
-  type <- surveys[[1]]$types[[question]]
-  target <- question_frame(surveys, question, mappings, delimiter)
-  if (comparison == "Period") {
-    target$group <- target$period
-  } else {
-    if (is.null(group_question) || !nzchar(group_question))
-      stop("Select a group key.")
-    groups <- question_frame(surveys, group_question, mappings, delimiter)
-    target$group <- vapply(groups$values, function(x)
-      if (length(x)) x[1] else NA_character_, "")
-    target$status[groups$status != "valid"] <- "missing"
-  }
-  target$type <- type
-  target
+  pieces <- Filter(Negate(is.null), pieces)
+  if (!length(pieces)) stop("Question was not found in loaded data: ", question)
+  result <- do.call(rbind, pieces)
+  rownames(result) <- NULL
+  result
 }
 
 available_tests <- function(type, groups) {

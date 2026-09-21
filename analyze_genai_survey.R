@@ -65,7 +65,7 @@ parse_field <- function(raw_values, field, period) {
   list(values = values, status = status)
 }
 
-compare_field <- function(field, parsed, periods) {
+# compare_field <- function(field, parsed, periods) {
   valid <- lapply(parsed, function(x) x$values[x$status == "valid"])
   n <- lengths(valid)
   test <- function(choice, method, p) data.frame(

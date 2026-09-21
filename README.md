@@ -1,29 +1,73 @@
-# Survey comparison Shiny app
+# Survey analysis Shiny app
 
-Run from this folder in R or RStudio:
+Run the app in R or RStudio:
 
 ```r
-install.packages(c("shiny", "readxl")) # once; readxl is only needed for Excel uploads
-shiny::runApp(".")
+install.packages(c("shiny", "readxl")) # once; readxl is needed for Excel
+shiny::runApp("C:/2026 Fall/work/R")
 ```
 
-Upload two CSV or Excel spreadsheets. The app reads only their question columns. Row 1 contains unique question names; row 2 contains their types; every later row is one response. A question can appear in both files under the same name and type. The app analyzes questions common to both files. The allowed type names are `likert` (the misspelling `linkert` is accepted), `continuous`, `multiselect`, `single select`, `group key`, and `free response`. Likert responses must be 1–5 after any mapping. Continuous responses must be numeric. Multiselect responses use a delimiter selected in the UI, semicolon by default. All other fields are read as raw text. Blank cells are missing. Invalid Likert or continuous values are excluded and counted.
+If you move the project, use the new folder containing `app.R`. In RStudio,
+opening `app.R` and clicking **Run App** also works.
 
-The two uploaded files are treated as independent samples. Choose **Uploaded files** to compare the two datasets, or **Group key values** to group their combined rows by a group-key column. A group key is a time-period or population label, not a respondent ID. Tests that allow more than two independent groups can compare additional group-key values. Paired and repeated-measures tests in the supplied guide are therefore not offered.
+## Spreadsheet format
 
-For a mapping file, use CSV or Excel with columns `question,period,raw,mapped`. Set `period` to `All`, `Period 1`, or `Period 2`. For example:
+Upload any number of CSV, XLS, or XLSX files on the **Load data** tab and click
+**Add uploaded data**. You can add more files later; **Clear loaded data** starts
+over. Every worksheet in an Excel file is loaded. Each file or worksheet
+must have:
+
+1. Row 1: unique question names.
+2. Row 2: one type per question.
+3. Row 3 onward: one response per row.
+4. Exactly one column typed `group key`. Its cells contain the time-period or
+   population label for each response, such as `Fall 2025` or `Fall 2026`.
+
+For example:
 
 ```csv
-question,period,raw,mapped
-Frequency,Period 1,1,Never
-Frequency,Period 2,Not at all,Never
+Period,AI frequency,Tools used,Experience
+group key,likert,multiselect,free response
+Fall 2025,2,ChatGPT;Claude,Helpful for brainstorming
+Fall 2026,4,ChatGPT,Useful for drafting
 ```
 
-You can also select a question and period in the app and enter one `raw => mapped` rule per line. Click **Save UI mapping** to apply it. UI rules override matching file rules. Mappings act on each multiselect token separately. Values without a rule remain raw.
+One spreadsheet can contain several time periods. Sheets can have different
+question columns, but a question repeated across sheets must have the same name
+and type. Analysis of a question uses all loaded sheets that contain it. The
+group-key column may have a different question name on each sheet.
 
-Select a question and then a statistical test. Likert questions offer Mann-Whitney U or Brunner-Munzel for two groups, and Kruskal-Wallis with Dunn post-hoc comparisons for more groups. Continuous questions also offer independent and Welch t-tests, Yuen's trimmed-mean test, one-way, Welch, and robust trimmed-mean ANOVA, Tukey and Games-Howell post-hoc comparisons, plus the Fligner-Killeen spread check. Single-select and group-key questions offer Fisher exact or chi-square; multiselect offers those tests for a selected choice versus all other responses. Free responses are shown for review without an inferential test. The app shows response counts, summaries, a graph, test statistic, p-value, and degrees of freedom where available. Numeric summaries include mean, SD, SEM, median, IQR, 95% t interval, and Shapiro-Wilk p-value when the sample size permits. Check distribution and spread before interpreting parametric tests.
+Supported types are `likert` (also accepts `linkert`), `continuous`,
+`multiselect`, `single select`, `group key`, and `free response`. Likert
+values must be 1–5; continuous values must be numeric. Multiselect values use
+semicolon-separated choices. The app uses the values as written, with no value
+mapping. Blank cells are missing; invalid Likert or continuous values are
+excluded and counted.
 
-The robust and post-hoc options require optional R packages. Install the ones you intend to use with `install.packages(c("brunnermunzel", "WRS2", "PMCMRplus"))`. The app gives an install message if a selected package is missing.
+## Analyze
 
-The statistical guide is [Selecting statistical tests.docx](<Selecting statistical tests.docx>). Its paired and repeated tests require respondent IDs or repeated observations, which this input format does not define. The original command-line comparison remains in `analyze_genai_survey.R`.
+The **Analyze** tab lets you choose a question, inspect its response counts,
+summary, and graph, then run an applicable test across the group-key values in
+all loaded sheets. Group-key values represent independent populations, not
+respondent IDs. More than two time periods can be compared by tests that
+support multiple groups.
 
+Likert questions offer Mann-Whitney U and Brunner-Munzel for two groups, and
+Kruskal-Wallis with Dunn comparisons for more groups. Continuous questions
+also offer independent and Welch t-tests, Yuen's trimmed-mean test, one-way,
+Welch, and robust trimmed-mean ANOVA, Tukey and Games-Howell comparisons, and
+the Fligner-Killeen spread check. Single-select questions offer Fisher exact
+and chi-square. Multiselect questions offer those tests for one selected choice.
+Free responses are displayed without an inferential test.
+
+The optional tests require `brunnermunzel`, `WRS2`, or `PMCMRplus`. Install
+the ones you need with:
+
+```r
+install.packages(c("brunnermunzel", "WRS2", "PMCMRplus"))
+```
+
+Paired and repeated-measures tests in [Selecting statistical tests.docx](<Selecting statistical tests.docx>)
+are not offered because the spreadsheet format does not identify the same
+respondent across periods. The original command-line comparison remains in
+`analyze_genai_survey.R`.

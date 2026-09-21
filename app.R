@@ -2,121 +2,135 @@ library(shiny)
 source("survey_app_core.R")
 
 ui <- fluidPage(
-  titlePanel("Survey comparison"),
-  sidebarLayout(
-    sidebarPanel(
-      fileInput("period1", "Period 1 spreadsheet", accept = c(".csv", ".xls", ".xlsx")),
-      fileInput("period2", "Period 2 spreadsheet", accept = c(".csv", ".xls", ".xlsx")),
-      textInput("sheet1", "Period 1 Excel sheet", value = "1"),
-      textInput("sheet2", "Period 2 Excel sheet", value = "1"),
-      tags$hr(),
-      fileInput("mapping_file", "Optional mapping spreadsheet",
+  titlePanel("Survey analysis"),
+  tabsetPanel(
+    id = "workflow",
+    tabPanel(
+      "Load data",
+      br(),
+      fileInput("files", "Upload survey files", multiple = TRUE,
                 accept = c(".csv", ".xls", ".xlsx")),
-      selectInput("mapping_question", "Edit mappings for question", choices = NULL),
-      selectInput("mapping_period", "Mapping applies to",
-                  choices = c("All", "Period 1", "Period 2")),
-      textAreaInput("mapping_text", "UI mapping (one raw => mapped per line)",
-                    rows = 4, placeholder = "1 => Strongly disagree"),
-      actionButton("save_mapping", "Save UI mapping"),
-      textOutput("mapping_saved"),
-      tags$hr(),
-      textInput("delimiter", "Multiselect delimiter", value = ";"),
-      selectInput("question", "Question to analyze", choices = NULL),
-      radioButtons("comparison", "Compare", c("Uploaded files", "Group key values"),
-                   selected = "Uploaded files"),
-      conditionalPanel("input.comparison == 'Group key values'",
-        selectInput("group_question", "Group key", choices = NULL)),
-      selectInput("test", "Statistical test", choices = NULL),
-      uiOutput("choice_ui"),
-      actionButton("run_test", "Run test", class = "btn-primary")
+      helpText("Each CSV or Excel worksheet has question names in row 1, types in row 2, and responses below. Every sheet needs one group key column containing its time-period labels."),
+      actionButton("load_data", "Add uploaded data", class = "btn-primary"),
+      actionButton("clear_data", "Clear loaded data"),
+      br(), br(),
+      textOutput("load_status"),
+      h4("Loaded sources"),
+      tableOutput("sources"),
+      h4("Available questions"),
+      tableOutput("catalog")
     ),
-    mainPanel(
-      h3("Question overview"),
-      tableOutput("quality"),
-      plotOutput("chart", height = "350px"),
-      tableOutput("summary"),
-      tableOutput("numeric_summary"),
-      h3("Statistical result"),
-      verbatimTextOutput("test_result"),
-      h3("Free responses"),
-      tableOutput("free_responses"),
-      textOutput("status")
+    tabPanel(
+      "Analyze",
+      br(),
+      fluidRow(
+        column(4,
+          selectInput("question", "Question", choices = NULL),
+          selectInput("test", "Statistical test", choices = NULL),
+          uiOutput("choice_ui"),
+          actionButton("run_test", "Run test", class = "btn-primary")
+        ),
+        column(8,
+          h4("Response counts"),
+          tableOutput("quality"),
+          plotOutput("chart", height = "350px"),
+          h4("Summary"),
+          tableOutput("summary"),
+          tableOutput("numeric_summary"),
+          h4("Statistical result"),
+          verbatimTextOutput("test_result"),
+          uiOutput("free_heading"),
+          tableOutput("free_responses")
+        )
+      )
     )
   )
 )
 
 server <- function(input, output, session) {
-  saved_mappings <- reactiveVal(empty_mapping())
-  mapping_note <- reactiveVal("")
+  data_state <- reactiveVal(list(surveys = NULL, loaded_paths = character(),
+                                 error = NULL))
 
-  surveys <- reactive({
-    req(input$period1, input$period2)
-    sheet <- function(x) if (grepl("^[0-9]+$", x)) as.integer(x) else x
-    first <- read_two_row_survey(input$period1$datapath,
-                                 input$period1$name, sheet(input$sheet1))
-    second <- read_two_row_survey(input$period2$datapath,
-                                  input$period2$name, sheet(input$sheet2))
-    common <- intersect(names(first$types), names(second$types))
-    if (!length(common)) stop("The two files have no question names in common.")
-    mismatch <- common[first$types[common] != second$types[common]]
-    if (length(mismatch))
-      stop("Question types differ between files: ", paste(mismatch, collapse = ", "))
-    list(first, second)
+  observeEvent(input$load_data, {
+    previous <- data_state()
+    files <- input$files
+    new_files <- if (is.null(files)) NULL else
+      files[!files$datapath %in% previous$loaded_paths, , drop = FALSE]
+    state <- tryCatch({
+      surveys <- load_survey_files(
+        new_files, if (is.null(previous$surveys)) list() else previous$surveys)
+      list(surveys = surveys,
+           loaded_paths = c(previous$loaded_paths, new_files$datapath),
+           error = NULL)
+    }, error = function(e)
+      list(surveys = previous$surveys,
+           loaded_paths = previous$loaded_paths,
+           error = conditionMessage(e)))
+    data_state(state)
+    if (is.null(state$error)) {
+      questions <- unique(unlist(lapply(state$surveys, function(x)
+        names(x$types)[x$types != "group key"])))
+      updateSelectInput(session, "question", choices = questions,
+                        selected = if (length(questions)) questions[1] else character())
+      updateTabsetPanel(session, "workflow", selected = "Analyze")
+    }
   })
 
-  observeEvent(surveys(), {
-    common <- intersect(names(surveys()[[1]]$types),
-                        names(surveys()[[2]]$types))
-    updateSelectInput(session, "question", choices = common,
-                      selected = common[1])
-    updateSelectInput(session, "mapping_question", choices = common,
-                      selected = common[1])
-    keys <- common[surveys()[[1]]$types[common] == "group key"]
-    updateSelectInput(session, "group_question", choices = keys)
+  observeEvent(input$clear_data, {
+    data_state(list(surveys = NULL, loaded_paths = character(), error = NULL))
+    updateSelectInput(session, "question", choices = character())
+    updateSelectInput(session, "test", choices = character())
+    updateTabsetPanel(session, "workflow", selected = "Load data")
   })
 
-  file_mappings <- reactive({
-    if (is.null(input$mapping_file)) return(empty_mapping())
-    read_mapping_file(input$mapping_file$datapath, input$mapping_file$name)
+  loaded <- reactive({
+    state <- data_state()
+    req(state$surveys)
+    state$surveys
   })
 
-  observeEvent(input$save_mapping, {
-    req(input$mapping_question)
-    tryCatch({
-      new <- widget_mapping(input$mapping_text, input$mapping_question,
-                            input$mapping_period)
-      old <- saved_mappings()
-      old <- old[!(old$question == input$mapping_question &
-                     old$period == input$mapping_period), , drop = FALSE]
-      saved_mappings(rbind(old, new))
-      mapping_note(paste(nrow(new), "UI mapping rows saved for",
-                         input$mapping_question, "in", input$mapping_period))
-    }, error = function(e) mapping_note(conditionMessage(e)))
+  output$load_status <- renderText({
+    state <- data_state()
+    if (!is.null(state$error)) return(state$error)
+    if (is.null(state$surveys)) return("Upload files, then click Load data.")
+    paste(length(state$surveys), "sheets loaded;",
+          sum(vapply(state$surveys, function(x) nrow(x$data), integer(1))),
+          "response rows.")
   })
-  output$mapping_saved <- renderText(mapping_note())
 
-  mappings <- reactive({
-    file <- file_mappings()
-    ui <- saved_mappings()
-    file$source <- rep("file", nrow(file))
-    ui$source <- rep("ui", nrow(ui))
-    rbind(file, ui)
+  output$sources <- renderTable({
+    surveys <- loaded()
+    do.call(rbind, lapply(surveys, function(x) {
+      periods <- unique(trimws(x$data[[x$key]]))
+      periods <- periods[!is.na(periods) & nzchar(periods)]
+      data.frame(source = x$source, rows = nrow(x$data),
+                 group_key = x$key, periods = paste(periods, collapse = ", "))
+    }))
+  })
+
+  output$catalog <- renderTable({
+    surveys <- loaded()
+    questions <- unique(unlist(lapply(surveys, function(x)
+      names(x$types)[x$types != "group key"])))
+    do.call(rbind, lapply(questions, function(question) {
+      present <- vapply(surveys, function(x) question %in% names(x$types), logical(1))
+      data.frame(question = question,
+                 type = surveys[[which(present)[1]]]$types[[question]],
+                 sheets = sum(present))
+    }))
   })
 
   current_frame <- reactive({
-    req(surveys(), input$question)
-    if (!nzchar(input$delimiter)) stop("Multiselect delimiter cannot be blank.")
-    mode <- if (input$comparison == "Uploaded files") "Period" else "Group"
-    analysis_frame(surveys(), input$question, mode, input$group_question,
-                   mappings(), input$delimiter)
+    req(loaded(), input$question)
+    analysis_frame(loaded(), input$question)
   })
 
   observeEvent(current_frame(), {
     frame <- current_frame()
     groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
-    choices <- available_tests(frame$type[1], length(groups))
-    updateSelectInput(session, "test", choices = choices,
-                      selected = if (length(choices)) choices[1] else character())
+    tests <- available_tests(frame$type[1], length(groups))
+    updateSelectInput(session, "test", choices = tests,
+                      selected = if (length(tests)) tests[1] else character())
   })
 
   output$choice_ui <- renderUI({
@@ -133,8 +147,7 @@ server <- function(input, output, session) {
                                useNA = "ifany"))
   }, rownames = TRUE)
 
-  output$summary <- renderTable(summarize_question(current_frame()),
-                                digits = 2)
+  output$summary <- renderTable(summarize_question(current_frame()), digits = 2)
   output$numeric_summary <- renderTable(summarize_numeric(current_frame()),
                                         digits = 3)
 
@@ -143,12 +156,11 @@ server <- function(input, output, session) {
     if (frame$type[1] == "continuous") {
       valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
       validate(need(nrow(valid), "No valid responses to plot."))
-      y <- as.numeric(unlist(valid$values))
-      boxplot(y ~ valid$group, xlab = "Group", ylab = input$question,
-              col = "#78b5ad")
+      boxplot(as.numeric(unlist(valid$values)) ~ valid$group,
+              xlab = "Time period", ylab = input$question, col = "#78b5ad")
       return()
     }
-    summary <- summarize_question(current_frame())
+    summary <- summarize_question(frame)
     validate(need(nrow(summary), "No valid responses to plot."))
     groups <- unique(summary$group)
     responses <- unique(summary$response)
@@ -158,73 +170,67 @@ server <- function(input, output, session) {
     for (i in seq_len(nrow(summary)))
       values[summary$response[i], summary$group[i]] <-
         if (is_free) summary$n[i] else summary$percent[i]
-    if (current_frame()$type[1] == "likert") {
-      barplot(values, beside = FALSE, col = c("#b45050", "#d99577", "#d4d4d4",
-                                             "#78b5ad", "#247f7a"),
-              legend.text = rownames(values), xlab = "Group",
+    if (frame$type[1] == "likert") {
+      barplot(values, beside = FALSE,
+              col = c("#b45050", "#d99577", "#d4d4d4", "#78b5ad", "#247f7a"),
+              legend.text = rownames(values), xlab = "Time period",
               ylab = "Percent of valid responses", ylim = c(0, 100))
     } else {
       barplot(values, beside = TRUE, las = 2,
               col = grDevices::hcl.colors(nrow(values), "Set 2"),
-              legend.text = rownames(values), xlab = "Group",
+              legend.text = rownames(values), xlab = "Time period",
               ylab = if (is_free) "Responses" else "Percent of valid responses")
     }
   })
 
   result_state <- reactiveVal(NULL)
   observeEvent(current_frame(), result_state(NULL), ignoreInit = TRUE)
+  observeEvent(input$test, result_state(NULL), ignoreInit = TRUE)
+  observeEvent(input$choice, result_state(NULL), ignoreInit = TRUE)
   observeEvent(input$run_test, {
     result_state(tryCatch({
       frame <- current_frame()
       req(input$test)
-      if (!input$test %in% available_tests(frame$type[1],
-           length(unique(frame$group[frame$status == "valid" & !is.na(frame$group)]))))
-        stop("This test is not available for the current question and groups.")
+      groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
+      if (!input$test %in% available_tests(frame$type[1], length(groups)))
+        stop("This test is not available for the current question.")
       run_question_test(frame, input$test, input$choice)
     }, error = function(e) list(error = conditionMessage(e))))
   })
 
   output$test_result <- renderPrint({
-    if (current_frame()$type[1] == "free response") {
+    frame <- current_frame()
+    if (frame$type[1] == "free response") {
       cat("Free response: descriptive review only.")
       return()
     }
     x <- result_state()
     if (is.null(x)) {
       cat("Choose a test and click Run test.")
-      return()
-    }
-    if (!is.null(x$error)) {
+    } else if (!is.null(x$error)) {
       cat(x$error)
-      return()
-    }
-    if (!is.null(x$pairwise)) {
+    } else if (!is.null(x$pairwise)) {
       cat(x$method, "\n")
       print(x$pairwise)
       cat(x$note, "\n")
-      return()
+    } else {
+      cat(x$method, "\nStatistic:", signif(x$statistic, 4),
+          "\np-value:", signif(x$p_value, 4), "\n")
+      if (!is.null(x$df) && !all(is.na(x$df)))
+        cat("Degrees of freedom:", paste(signif(x$df, 4), collapse = ", "), "\n")
+      if (nzchar(x$note)) cat(x$note, "\n")
     }
-    cat(x$method, "\nStatistic:", signif(x$statistic, 4),
-        "\np-value:", signif(x$p_value, 4), "\n")
-    if (!is.null(x$df) && !all(is.na(x$df)))
-      cat("Degrees of freedom:", paste(signif(x$df, 4), collapse = ", "), "\n")
-    if (nzchar(x$note)) cat(x$note, "\n")
   })
 
+  output$free_heading <- renderUI({
+    if (current_frame()$type[1] == "free response") h4("Free responses")
+  })
   output$free_responses <- renderTable({
     frame <- current_frame()
     if (frame$type[1] != "free response") return(NULL)
-    valid <- frame[frame$status == "valid", , drop = FALSE]
-    data.frame(period = valid$period, row = valid$row,
+    valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
+    data.frame(source = valid$source, row = valid$row, period = valid$group,
                response = vapply(valid$values, `[[`, "", 1))
-  })
-
-  output$status <- renderText({
-    tryCatch({
-      surveys()
-      paste("Loaded", nrow(surveys()[[1]]$data), "Period 1 rows and",
-            nrow(surveys()[[2]]$data), "Period 2 rows.")
-    }, error = function(e) conditionMessage(e))
   })
 }
 
