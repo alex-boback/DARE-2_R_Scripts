@@ -28,7 +28,7 @@ For example:
 ```csv
 Period,Age range,Gender,Confidence,AI frequency,Tools used,Experience
 group key,group key,group key,linkert,ordered categorical: Never; Sometimes; Often,multiselect,free response
-Fall 2025,18-24,Female,2,Sometimes,ChatGPT;Claude,Helpful for brainstorming
+Fall 2025,18-24,Female,2,Sometimes,"ChatGPT,Claude",Helpful for brainstorming
 Fall 2026,25-34,Male,4,Often,ChatGPT,Useful for drafting
 ```
 
@@ -45,9 +45,12 @@ Supported types are `linkert`, `ordered categorical`, `continuous`,
 values must be 1–5; continuous values must be numeric. For an ordered
 categorical question, put its levels in order in the type cell, separated by
 semicolons: `ordered categorical: Low; Medium; High`. The same question
-must declare the same levels in every sheet. Multiselect responses also use
-semicolons to separate selected choices. The app uses the values as written,
-with no value mapping. Blank or invalid responses are excluded and counted.
+must declare the same levels in every sheet. Multiselect responses use commas
+to separate selected choices, such as `ChatGPT,Claude`. In a CSV file, quote
+any cell that contains a comma. The app counts each option once per respondent,
+so option counts and percentages can sum above the number of respondents and
+100%. It uses the values as written, with no value mapping. Blank or invalid
+responses are excluded and counted.
 
 ## Analyze
 

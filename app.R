@@ -42,6 +42,7 @@ ui <- fluidPage(
           tableOutput("quality"),
           plotOutput("chart", height = "350px"),
           h4("Summary"),
+          textOutput("summary_note"),
           tableOutput("summary"),
           tableOutput("numeric_summary"),
           tableOutput("ordered_summary"),
@@ -244,6 +245,10 @@ server <- function(input, output, session) {
   }, rownames = TRUE)
 
   output$summary <- renderTable(summarize_question(view_frame()), digits = 2)
+  output$summary_note <- renderText({
+    if (view_frame()$type[1] == "multiselect")
+      "Counts are per option, once per respondent. Percentages can add above 100%."
+  })
   output$numeric_summary <- renderTable(summarize_numeric(view_frame()),
                                         digits = 3)
   output$ordered_summary <- renderTable(summarize_ordered(view_frame()),

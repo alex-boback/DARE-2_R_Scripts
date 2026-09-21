@@ -89,7 +89,7 @@ load_survey_files <- function(uploads, existing = list()) {
   surveys
 }
 
-parse_question <- function(values, type, delimiter = ";", ordered_levels = NULL) {
+parse_question <- function(values, type, ordered_levels = NULL) {
   out <- vector("list", length(values))
   status <- rep("valid", length(values))
   for (i in seq_along(values)) {
@@ -99,7 +99,7 @@ parse_question <- function(values, type, delimiter = ";", ordered_levels = NULL)
       next
     }
     tokens <- if (type == "multiselect")
-      trimws(strsplit(raw, delimiter, fixed = TRUE)[[1]]) else raw
+      trimws(strsplit(raw, ",", fixed = TRUE)[[1]]) else raw
     if (!length(tokens) || any(!nzchar(tokens))) {
       status[i] <- "invalid"
       next
@@ -136,8 +136,7 @@ default_group_keys <- function(surveys, question) {
   unname(group_key_options(surveys, question)[1])
 }
 
-analysis_frame <- function(surveys, question, group_keys = NULL,
-                           delimiter = ";") {
+analysis_frame <- function(surveys, question, group_keys = NULL) {
   if (is.null(group_keys) || !length(group_keys))
     group_keys <- default_group_keys(surveys, question)
   if (!length(group_keys) || anyDuplicated(group_keys) ||
@@ -146,7 +145,7 @@ analysis_frame <- function(surveys, question, group_keys = NULL,
   pieces <- lapply(surveys, function(survey) {
     if (!question %in% names(survey$types)) return(NULL)
     type <- survey$types[[question]]
-    parsed <- parse_question(survey$data[[question]], type, delimiter,
+    parsed <- parse_question(survey$data[[question]], type,
                              survey$orders[[question]])
     keys <- if (identical(group_keys, "__first_group_key__"))
       survey$keys[1] else group_keys

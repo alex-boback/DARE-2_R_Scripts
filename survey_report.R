@@ -76,6 +76,9 @@ report_entry_html <- function(entry, surveys) {
   }
   if ("summary" %in% entry$sections) {
     section <- c(section, "<h3>Summary</h3>")
+    if (type == "multiselect")
+      section <- c(section,
+        "<p>Counts are per option, once per respondent. Percentages can add above 100%.</p>")
     categorical <- summarize_question(view)
     numeric <- summarize_numeric(view)
     ordered <- summarize_ordered(view)
