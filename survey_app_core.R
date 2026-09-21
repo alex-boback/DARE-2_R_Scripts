@@ -191,6 +191,106 @@ summarize_numeric <- function(frame) {
   }))
 }
 
+graph_options <- function(type) {
+  switch(type,
+    likert = c("100% stacked bars", "Response bars", "Boxplot"),
+    continuous = c("Boxplot", "Histogram", "Density curves", "Strip chart"),
+    multiselect = c("Grouped bars", "Dot plot"),
+    `single select` = c("Grouped bars", "Stacked bars", "Dot plot"),
+    `free response` = c("Response counts", "Response lengths"),
+    character())
+}
+
+plot_question <- function(frame, graph, question) {
+  valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
+  if (!nrow(valid)) stop("No valid responses to plot.")
+  type <- frame$type[1]
+  groups <- unique(valid$group)
+
+  if (type == "continuous" || graph == "Boxplot" ||
+      graph == "Histogram" || graph == "Density curves" ||
+      graph == "Strip chart") {
+    y <- as.numeric(unlist(valid$values))
+    g <- factor(valid$group, levels = groups)
+    if (graph == "Boxplot") {
+      boxplot(y ~ g, xlab = "Group", ylab = question, col = "#78b5ad")
+    } else if (graph == "Strip chart") {
+      stripchart(y ~ g, method = "jitter", jitter = 0.15, vertical = TRUE,
+                 pch = 16, col = "#247f7a", xlab = "Group", ylab = question)
+    } else if (graph == "Histogram") {
+      colors <- grDevices::hcl.colors(length(groups), "Set 2")
+      limits <- range(y)
+      if (diff(limits) == 0) limits <- limits + c(-0.5, 0.5)
+      breaks <- pretty(limits, n = 10)
+      for (i in seq_along(groups)) {
+        x <- y[g == groups[i]]
+        hist(x, breaks = breaks, freq = FALSE, xlim = range(breaks),
+             col = grDevices::adjustcolor(colors[i], alpha.f = 0.4),
+             border = colors[i], add = i > 1, main = question,
+             xlab = question, ylab = "Density")
+      }
+      legend("topright", groups, fill = colors, bty = "n")
+    } else if (graph == "Density curves") {
+      curves <- lapply(groups, function(group) {
+        x <- y[g == group]
+        if (length(x) < 2 || sd(x) == 0) return(NULL)
+        density(x)
+      })
+      keep <- !vapply(curves, is.null, logical(1))
+      if (!any(keep)) {
+        plot.new()
+        text(.5, .5, "Each plotted group needs at least two varying values.")
+      } else {
+        colors <- grDevices::hcl.colors(sum(keep), "Set 2")
+        curves <- curves[keep]
+        plot(curves[[1]], xlim = range(unlist(lapply(curves, `[[`, "x"))),
+             ylim = c(0, max(unlist(lapply(curves, `[[`, "y")))),
+             main = question, xlab = question, ylab = "Density",
+             col = colors[1], lwd = 2)
+        if (length(curves) > 1) for (i in 2:length(curves))
+          lines(curves[[i]], col = colors[i], lwd = 2)
+        legend("topright", groups[keep], col = colors, lwd = 2, bty = "n")
+      }
+    } else stop("Unsupported graph for this question type.")
+    return(invisible(NULL))
+  }
+
+  if (graph == "Response lengths") {
+    lengths <- nchar(unlist(valid$values))
+    boxplot(lengths ~ factor(valid$group, levels = groups),
+            xlab = "Group", ylab = "Characters per response",
+            col = "#78b5ad", main = question)
+    return(invisible(NULL))
+  }
+
+  summary <- summarize_question(frame)
+  responses <- unique(summary$response)
+  values <- matrix(0, nrow = length(responses), ncol = length(groups),
+                   dimnames = list(responses, groups))
+  measure <- if (graph == "Response counts") summary$n else summary$percent
+  for (i in seq_len(nrow(summary)))
+    values[summary$response[i], summary$group[i]] <- measure[i]
+  if (graph == "Dot plot") {
+    labels <- paste(summary$group, summary$response, sep = " - ")
+    op <- par(mar = c(5, min(18, max(8, max(nchar(labels)) / 2)), 4, 2))
+    on.exit(par(op))
+    dotchart(summary$percent, labels = labels, pch = 16, color = "#247f7a",
+             xlab = "Percent of valid responses", main = question)
+  } else {
+    beside <- graph %in% c("Grouped bars", "Response bars")
+    colors <- if (type == "likert")
+      c("#b45050", "#d99577", "#d4d4d4", "#78b5ad", "#247f7a")
+    else grDevices::hcl.colors(nrow(values), "Set 2")
+    barplot(values, beside = beside, col = colors,
+            legend.text = if (graph == "Response counts") NULL else rownames(values),
+            xlab = "Group", ylab = if (graph == "Response counts")
+              "Responses" else "Percent of valid responses",
+            ylim = if (graph %in% c("100% stacked bars", "Stacked bars"))
+              c(0, 100) else NULL, main = question)
+  }
+  invisible(NULL)
+}
+
 run_question_test <- function(frame, method, choice = NULL) {
   valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
   groups <- unique(valid$group)

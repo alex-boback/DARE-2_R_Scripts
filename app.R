@@ -26,6 +26,11 @@ ui <- fluidPage(
       fluidRow(
         column(4,
           selectInput("question", "Question", choices = NULL),
+          textOutput("question_type"),
+          selectInput("view_group", "Show responses from",
+                      choices = c("All groups" = "")),
+          selectInput("graph", "Graph", choices = NULL),
+          helpText("The group filter changes the overview. Tests compare all loaded groups."),
           selectInput("test", "Statistical test", choices = NULL),
           uiOutput("choice_ui"),
           actionButton("run_test", "Run test", class = "btn-primary")
@@ -80,6 +85,8 @@ server <- function(input, output, session) {
     data_state(list(surveys = NULL, loaded_paths = character(), error = NULL))
     updateSelectInput(session, "question", choices = character())
     updateSelectInput(session, "test", choices = character())
+    updateSelectInput(session, "view_group", choices = c("All groups" = ""))
+    updateSelectInput(session, "graph", choices = character())
     updateTabsetPanel(session, "workflow", selected = "Load data")
   })
 
@@ -125,12 +132,31 @@ server <- function(input, output, session) {
     analysis_frame(loaded(), input$question)
   })
 
+  output$question_type <- renderText({
+    paste("Question type:", current_frame()$type[1])
+  })
+
   observeEvent(current_frame(), {
     frame <- current_frame()
     groups <- unique(frame$group[frame$status == "valid" & !is.na(frame$group)])
     tests <- available_tests(frame$type[1], length(groups))
+    updateSelectInput(session, "view_group",
+                      choices = c("All groups" = "", stats::setNames(groups, groups)),
+                      selected = "")
+    graphs <- graph_options(frame$type[1])
+    updateSelectInput(session, "graph", choices = graphs,
+                      selected = if (length(graphs)) graphs[1] else character())
     updateSelectInput(session, "test", choices = tests,
                       selected = if (length(tests)) tests[1] else character())
+  })
+
+  view_frame <- reactive({
+    frame <- current_frame()
+    if (!is.null(input$view_group) && nzchar(input$view_group) &&
+        input$view_group %in% frame$group)
+      frame <- frame[!is.na(frame$group) & frame$group == input$view_group,
+                     , drop = FALSE]
+    frame
   })
 
   output$choice_ui <- renderUI({
@@ -142,45 +168,23 @@ server <- function(input, output, session) {
   })
 
   output$quality <- renderTable({
-    frame <- current_frame()
+    frame <- view_frame()
     as.data.frame.matrix(table(Group = frame$group, Status = frame$status,
                                useNA = "ifany"))
   }, rownames = TRUE)
 
-  output$summary <- renderTable(summarize_question(current_frame()), digits = 2)
-  output$numeric_summary <- renderTable(summarize_numeric(current_frame()),
+  output$summary <- renderTable(summarize_question(view_frame()), digits = 2)
+  output$numeric_summary <- renderTable(summarize_numeric(view_frame()),
                                         digits = 3)
 
   output$chart <- renderPlot({
-    frame <- current_frame()
-    if (frame$type[1] == "continuous") {
-      valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
-      validate(need(nrow(valid), "No valid responses to plot."))
-      boxplot(as.numeric(unlist(valid$values)) ~ valid$group,
-              xlab = "Time period", ylab = input$question, col = "#78b5ad")
-      return()
-    }
-    summary <- summarize_question(frame)
-    validate(need(nrow(summary), "No valid responses to plot."))
-    groups <- unique(summary$group)
-    responses <- unique(summary$response)
-    values <- matrix(0, nrow = length(responses), ncol = length(groups),
-                     dimnames = list(responses, groups))
-    is_free <- frame$type[1] == "free response"
-    for (i in seq_len(nrow(summary)))
-      values[summary$response[i], summary$group[i]] <-
-        if (is_free) summary$n[i] else summary$percent[i]
-    if (frame$type[1] == "likert") {
-      barplot(values, beside = FALSE,
-              col = c("#b45050", "#d99577", "#d4d4d4", "#78b5ad", "#247f7a"),
-              legend.text = rownames(values), xlab = "Time period",
-              ylab = "Percent of valid responses", ylim = c(0, 100))
-    } else {
-      barplot(values, beside = TRUE, las = 2,
-              col = grDevices::hcl.colors(nrow(values), "Set 2"),
-              legend.text = rownames(values), xlab = "Time period",
-              ylab = if (is_free) "Responses" else "Percent of valid responses")
-    }
+    frame <- view_frame()
+    validate(need(any(frame$status == "valid" & !is.na(frame$group)),
+                  "No valid responses to plot."))
+    req(input$graph)
+    validate(need(input$graph %in% graph_options(frame$type[1]),
+                  "Choose a graph for this question."))
+    plot_question(frame, input$graph, input$question)
   })
 
   result_state <- reactiveVal(NULL)
@@ -223,10 +227,10 @@ server <- function(input, output, session) {
   })
 
   output$free_heading <- renderUI({
-    if (current_frame()$type[1] == "free response") h4("Free responses")
+    if (view_frame()$type[1] == "free response") h4("Free responses")
   })
   output$free_responses <- renderTable({
-    frame <- current_frame()
+    frame <- view_frame()
     if (frame$type[1] != "free response") return(NULL)
     valid <- frame[frame$status == "valid" & !is.na(frame$group), , drop = FALSE]
     data.frame(source = valid$source, row = valid$row, period = valid$group,

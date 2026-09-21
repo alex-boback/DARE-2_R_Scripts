@@ -52,6 +52,14 @@ all loaded sheets. Group-key values represent independent populations, not
 respondent IDs. More than two time periods can be compared by tests that
 support multiple groups.
 
+The selected question's type appears below the question picker. Use **Show
+responses from** to view one group or all groups in the response counts,
+summary, graph, and free-response list. Statistical tests always compare all
+loaded groups. The **Graph** picker offers charts suited to the question type:
+Likert response bars, stacked bars, and boxplots; continuous boxplots,
+histograms, density curves, and strip charts; categorical bars or dot plots;
+and free-response counts or response lengths.
+
 Likert questions offer Mann-Whitney U and Brunner-Munzel for two groups, and
 Kruskal-Wallis with Dunn comparisons for more groups. Continuous questions
 also offer independent and Welch t-tests, Yuen's trimmed-mean test, one-way,
