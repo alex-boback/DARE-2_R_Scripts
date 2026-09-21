@@ -343,12 +343,13 @@ server <- function(input, output, session) {
         style = "border:1px solid #ddd;padding:8px;margin-bottom:8px",
         checkboxInput(paste0("report_include_", i),
                       paste(question, "(", type, ")"), value = TRUE),
-        if (type != "free response") selectInput(paste0("report_test_", i),
-          "Add a group comparison test",
-          choices = c("No test" = "__none__", stats::setNames(tests, tests))),
+        if (type != "free response") checkboxGroupInput(paste0("report_tests_", i),
+          "Group comparison tests", choices = stats::setNames(tests, tests)),
         if (type != "free response") textOutput(paste0("report_test_description_", i)),
         if (length(choices)) selectInput(paste0("report_choice_", i),
-                                        "Multiselect option to test", choices = choices),
+          "Multiselect options to test",
+          choices = c("Every option separately" = "__all_options__",
+                      stats::setNames(choices, choices))),
         tags$details(tags$summary("More options"),
           selectInput(paste0("report_keys_", i), "Group by", choices = options,
                       selected = keys, multiple = TRUE),
@@ -369,9 +370,10 @@ server <- function(input, output, session) {
     for (i in seq_along(report_questions_available())) local({
       index <- i
       output[[paste0("report_test_description_", index)]] <- renderText({
-        method <- input[[paste0("report_test_", index)]]
-        if (is.null(method) || identical(method, "__none__")) return(NULL)
-        test_description(method)
+        methods <- input[[paste0("report_tests_", index)]]
+        if (!length(methods)) return(NULL)
+        paste(vapply(methods, function(method)
+          paste0(method, ": ", test_description(method)), ""), collapse = "\n")
       })
     })
   })
@@ -393,9 +395,10 @@ server <- function(input, output, session) {
       tests <- if (length(groups) >= 2)
         unique(c(available_tests(frame$type[1], length(groups)),
                  available_tests(frame$type[1], 2))) else character()
-      updateSelectInput(session, paste0("report_test_", i),
-        choices = c("No test" = "__none__", stats::setNames(tests, tests)),
-        selected = "__none__")
+      selected_tests <- isolate(input[[paste0("report_tests_", i)]])
+      updateCheckboxGroupInput(session, paste0("report_tests_", i),
+        choices = stats::setNames(tests, tests),
+        selected = intersect(selected_tests, tests))
     }
   })
 
@@ -419,10 +422,9 @@ server <- function(input, output, session) {
       sections <- input[[paste0("report_sections_", i)]]
       tests <- unique(c(available_tests(type, length(groups)),
                         available_tests(type, 2)))
-      test <- input[[paste0("report_test_", i)]]
-      if (!length(test) || !test %in% tests || length(groups) < 2)
-        test <- NULL
-      else
+      selected_tests <- input[[paste0("report_tests_", i)]]
+      tests <- intersect(tests, selected_tests)
+      if (length(tests) && length(groups) >= 2)
         sections <- c(sections, "test")
       graphs <- graph_options(type)
       graph <- input[[paste0("report_graph_", i)]]
@@ -431,13 +433,13 @@ server <- function(input, output, session) {
       choice <- input[[paste0("report_choice_", i)]]
       if (type == "multiselect") {
         choices <- sort(unique(unlist(frame$values[frame$status == "valid"])))
-        if (!length(choice) || !choice %in% choices)
-          choice <- if (length(choices)) choices[1] else NULL
-        if (is.null(choice)) sections <- setdiff(sections, "test")
+        if (!length(choice) || !choice %in% c("__all_options__", choices))
+          choice <- "__all_options__"
+        if (!length(choices)) sections <- setdiff(sections, "test")
       }
-      if (is.null(test)) sections <- setdiff(sections, "test")
+      if (!length(tests)) sections <- setdiff(sections, "test")
       list(question = question, group_keys = keys, group = group,
-           sections = sections, graph = graph, test = test, choice = choice,
+           sections = sections, graph = graph, tests = tests, choice = choice,
            note = if (is.null(input[[paste0("report_note_", i)]])) "" else
              trimws(input[[paste0("report_note_", i)]]))
     })
@@ -452,7 +454,8 @@ server <- function(input, output, session) {
         group_by = report_group_label(x$group_keys),
         group = if (identical(x$group, "__tally__")) "All responses together"
           else if (identical(x$group, "__all_groups__")) "Each group" else x$group,
-        included = paste(c("Basic summary", x$sections), collapse = ", "))
+        included = paste(c("Basic summary", setdiff(x$sections, "test"),
+                           x$tests), collapse = ", "))
     }))
   })
 

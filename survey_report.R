@@ -102,12 +102,26 @@ report_entry_html <- function(entry, surveys) {
                  graph_html)
   }
   if ("test" %in% entry$sections) {
-    result <- tryCatch(comparison_question_test(full, entry$test, entry$choice),
-                       error = function(e) list(error = conditionMessage(e)))
-    section <- c(section, "<h3>Group comparison test</h3>",
-                 paste0("<p>", report_escape(test_description(entry$test)), "</p>"),
-                 paste0("<pre>", report_escape(report_test_text(result)),
-                        "</pre>"))
+    section <- c(section, "<h3>Group comparison tests</h3>")
+    choices <- if (type == "multiselect" &&
+                   identical(entry$choice, "__all_options__"))
+      sort(unique(unlist(full$values[full$status == "valid"]))) else entry$choice
+    if (type != "multiselect") choices <- NA_character_
+    for (method in entry$tests) for (choice in choices) {
+      selected_choice <- if (is.na(choice)) NULL else choice
+      result <- tryCatch(
+        comparison_question_test(full, method, selected_choice),
+        error = function(e) list(error = conditionMessage(e)))
+      section <- c(section,
+        paste0("<h4>", report_escape(method),
+               if (type == "multiselect") paste0(" — ", report_escape(choice))
+               else "", "</h4>"),
+        paste0("<p>", report_escape(test_description(method)), "</p>"),
+        paste0("<pre>", report_escape(report_test_text(result)), "</pre>"))
+    }
+    if (type == "multiselect" && length(choices) > 1)
+      section <- c(section,
+        "<p>Each option is tested separately. P-values are not adjusted across options.</p>")
   }
   if ("free" %in% entry$sections && type == "free response") {
     valid <- view[view$status == "valid" & !is.na(view$group), , drop = FALSE]

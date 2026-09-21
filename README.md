@@ -91,11 +91,14 @@ Free responses are displayed without an inferential test.
 
 The **Report** tab starts with every question selected and includes a basic
 summary for each. Use the checkboxes or **Select all** and **Clear selection**.
-Choose an optional comparison test directly under a question. Open **More
+Choose any number of comparison tests directly under a question. For a
+multiselect question, test one option or every option separately. Open **More
 options** to change grouping or summary view, and add response status counts,
 a graph, free responses, or notes. The preview updates as you change settings;
 download a self-contained HTML file. Tests use all loaded groups even when the
-summary shows one group. Clearing data clears the report.
+summary shows one group. P-values are adjusted across group pairs for a
+two-group test run on more than two groups, but not across multiselect options.
+Clearing data clears the report.
 
 The optional tests require `brunnermunzel`, `WRS2`, or `PMCMRplus`. Install
 the ones you need with:
